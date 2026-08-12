@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+data/
+logs/
+dbt/target/
+dbt/logs/
+.env
+*.db
+*.sqlite

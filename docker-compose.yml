@@ -1,0 +1,50 @@
+##
+# @file docker-compose.yml
+# @brief WAID Multi-Service Docker Compose Configuration.
+# @details Defines container services for the data pipeline scheduler and Streamlit visualization dashboard.
+# @author AF
+# @date 2026
+
+services:
+  # Service 1: Batch/continuous pipeline execution via scheduler
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: waid-app:latest
+    container_name: waid_pipeline
+    command: ["python", "waid_scheduler.py"]
+    env_file:
+      - config/boot.env
+      - config/waid.env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./dbt/target:/app/dbt/target
+      - ./dbt/logs:/app/dbt/logs
+    environment:
+      - PORT=8501
+      - PYTHONPATH=/app:/app/config:/app/src
+      - WAID_SOURCE=/app
+    restart: unless-stopped
+
+  # Service 2: Launching the Streamlit dashboard on a web browser
+  dashboard:
+    image: waid-app:latest
+    container_name: waid_dashboard
+    command: ["python", "-m", "streamlit", "run", "src/waid_08_2_viz_streamlit.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    ports:
+      - "8501:8501"
+    env_file:
+      - config/boot.env
+      - config/waid.env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - PORT=8501
+      - PYTHONPATH=/app:/app/config:/app/src
+      - WAID_SOURCE=/app
+    restart: unless-stopped

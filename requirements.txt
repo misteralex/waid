@@ -1,0 +1,15 @@
+cdsapi==0.7.7
+joblib==1.5.3
+loguru==0.7.3
+matplotlib==3.11.1
+numpy==2.5.1
+pandas==3.0.5
+plotly==6.9.0
+python-dotenv==1.2.2
+Requests==2.34.2
+scikit-learn==1.9.0
+streamlit==1.60.0
+tensorflow==2.21.0
+xarray==2026.4.0
+dbt-core>=1.8.0
+dbt-sqlite>=1.8.0
