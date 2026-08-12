@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: external_raw
+    database: main
+    schema: main
+    description: "Tables populated externally by Python scripts"
+    tables:
+      - name: ecowitt_records
+        description: "Raw hourly weather data from the Ecowitt station"
+      - name: match_records
+        description: "Hourly data paired and synchronized between Ecowitt and ERA5"
+      - name: inference_records
+        description: "Inference records produced by the ML model"

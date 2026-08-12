@@ -1,0 +1,20 @@
+##
+# @file pyproject.toml
+# @brief Python project build and dependency specification file.
+# @details Configures setuptools build backend, package name, python version, and core dependencies.
+# @author AF
+# @date 2026
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waid"
+version = "0.1.0"
+description = "WAID draft and lab repository"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "loguru",
+]

@@ -1,0 +1,15 @@
+waid:
+  target: dev
+
+  outputs:
+    dev:
+      type: sqlite
+      database: "main"
+      schema: "main"
+
+      schemas_and_paths:
+        main: "{{ env_var('WAID_DB_MOCK_FILE') if env_var('WAID_SIM_MODE', 'false') | lower == 'true' else env_var('WAID_DB_FILE') }}"
+        external_raw: "{{ env_var('WAID_DB_MOCK_FILE') if env_var('WAID_SIM_MODE', 'false') | lower == 'true' else env_var('WAID_DB_FILE') }}"
+
+      schema_directory: "/mnt/y/de/waid-project/waid-draft/data"
+      threads: 1

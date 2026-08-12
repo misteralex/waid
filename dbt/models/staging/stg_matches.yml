@@ -1,0 +1,37 @@
+version: 2
+
+# @file stg_matches.yml
+# @author AF
+# @date 2026
+
+models:
+  - name: stg_matches
+    description: "Unified validation dataset between Ecowitt and ERA5"
+    columns:
+      # Common temporal key
+      - name: timestamp
+        tests:
+          - not_null
+          - unique
+
+      # Unified Ecowitt field validation
+      - name: ecowitt_temp
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -30
+              max_value: 50
+      
+      # Unified ERA5 field validation
+      - name: era5_temp
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -60
+              max_value: 60
+              
+      # Coherence check (recommended for match validation)
+      - name: bias_temp
+        description: "Absolute difference between Ecowitt and ERA5 temperature"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -20
+              max_value: 20 # Maximum tolerance threshold between sensor and model

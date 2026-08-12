@@ -1,0 +1,35 @@
+version: 2
+
+# @file int_matches_bias.yml
+# @author AF
+# @date 2026
+
+models:
+  - name: int_matches_bias
+    description: "Calculated operational bias between Ecowitt telemetry and ERA5 baseline."
+    columns:
+      - name: timestamp
+        description: "Hourly ISO timestamp (UTC)"
+        tests:
+          - unique
+          - not_null
+
+      - name: bias_temp
+        description: "Temperature bias (Ecowitt - ERA5) in °C"
+        tests:
+          - dbt_utils.accepted_range:
+              config:
+                severity: warn
+              arguments:
+                min_value: -15.0
+                max_value: 15.0
+
+      - name: bias_pres
+        description: "Pressure bias (Ecowitt - ERA5) in hPa"
+        tests:
+          - dbt_utils.accepted_range:
+              config:
+                severity: warn
+              arguments:
+                min_value: -30.0
+                max_value: 30.0
