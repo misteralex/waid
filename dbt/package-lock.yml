@@ -1,5 +1,14 @@
+# ==============================================================================
+# @file packages-lock.yml
+# @brief dBT package dependency management configuration file.
+# @details Defines third-party packages (dbt-utils) pinned to a specific Git revision 
+#          to ensure reproducible pipeline transformations.
+# @author AF
+# @date 2026
+# ==============================================================================
+
 packages:
-  - name: dbt_utils
-    package: dbt-labs/dbt_utils
-    version: 1.3.0
-sha1_hash: 226ae69cdfbc9367e2aa2c472b01f99dbce11de0
+  - git: git@github.com:dbt-labs/dbt-utils.git
+    name: dbt_utils
+    revision: e164c645238ca98f21b2ecc558912b94b3d75a9f
+sha1_hash: 5d3e2b7f86b4d299ac5a8ae61a1c431b72599064

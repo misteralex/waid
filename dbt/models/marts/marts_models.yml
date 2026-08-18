@@ -1,0 +1,150 @@
+version: 2
+models:
+  - name: station_metadata
+    columns:
+      - name: station_id
+        data_type: UNKNOWN
+      - name: station_name
+        data_type: UNKNOWN
+      - name: latitude
+        data_type: REAL
+      - name: longitude
+        data_type: REAL
+      - name: elevation_m
+        data_type: UNKNOWN
+      - name: height_above_ground_m
+        data_type: UNKNOWN
+      - name: min_training_days
+        data_type: INT
+      - name: retrain_window_days
+        data_type: INT
+      - name: updated_at
+        data_type: UNKNOWN
+      - name: sensor_specs
+        data_type: TEXT
+  - name: inference_prediction
+    columns:
+      - name: timestamp
+        data_type: NUM
+      - name: model_version
+        data_type: TEXT
+      - name: pred_temp
+        data_type: REAL
+      - name: pred_pres
+        data_type: REAL
+      - name: pred_rh
+        data_type: REAL
+      - name: pred_wind
+        data_type: REAL
+      - name: pred_solar
+        data_type: REAL
+      - name: pred_rain
+        data_type: REAL
+  - name: inference_stats
+    columns:
+      - name: model_version
+        data_type: TEXT
+      - name: model_version_tag
+        data_type: TEXT
+      - name: avg_temp
+        data_type: UNKNOWN
+      - name: std_temp
+        data_type: UNKNOWN
+      - name: avg_pres
+        data_type: UNKNOWN
+      - name: std_pres
+        data_type: UNKNOWN
+      - name: avg_rh
+        data_type: UNKNOWN
+      - name: std_rh
+        data_type: UNKNOWN
+      - name: avg_wind
+        data_type: UNKNOWN
+      - name: std_wind
+        data_type: UNKNOWN
+      - name: avg_solar
+        data_type: UNKNOWN
+      - name: std_solar
+        data_type: UNKNOWN
+      - name: avg_rain
+        data_type: UNKNOWN
+      - name: std_rain
+        data_type: UNKNOWN
+  - name: inference_quality
+    columns:
+      - name: timestamp
+        data_type: NUM
+      - name: model_version
+        data_type: TEXT
+      - name: pred_temp
+        data_type: REAL
+      - name: pred_pres
+        data_type: REAL
+      - name: pred_rh
+        data_type: REAL
+      - name: pred_wind
+        data_type: REAL
+      - name: pred_solar
+        data_type: UNKNOWN
+      - name: pred_rain
+        data_type: UNKNOWN
+      - name: actual_temp
+        data_type: REAL
+      - name: actual_pres
+        data_type: REAL
+      - name: actual_rh
+        data_type: REAL
+      - name: actual_wind
+        data_type: REAL
+      - name: actual_solar
+        data_type: REAL
+      - name: actual_rain
+        data_type: REAL
+      - name: temp_era5
+        data_type: UNKNOWN
+      - name: pres_era5
+        data_type: UNKNOWN
+      - name: rh_era5
+        data_type: UNKNOWN
+      - name: wind_era5
+        data_type: UNKNOWN
+      - name: solar_era5
+        data_type: UNKNOWN
+      - name: rain_era5
+        data_type: UNKNOWN
+      - name: delta_temp
+        data_type: UNKNOWN
+      - name: delta_pres
+        data_type: UNKNOWN
+      - name: delta_rh
+        data_type: UNKNOWN
+      - name: delta_wind
+        data_type: UNKNOWN
+      - name: delta_solar
+        data_type: UNKNOWN
+      - name: delta_rain
+        data_type: UNKNOWN
+      - name: abs_error_temp
+        data_type: UNKNOWN
+      - name: abs_error_pres
+        data_type: UNKNOWN
+      - name: abs_error_rh
+        data_type: UNKNOWN
+      - name: abs_error_wind
+        data_type: UNKNOWN
+      - name: abs_error_solar
+        data_type: UNKNOWN
+      - name: abs_error_rain
+        data_type: UNKNOWN
+      - name: perc_error_temp
+        data_type: UNKNOWN
+      - name: perc_error_pres
+        data_type: UNKNOWN
+      - name: perc_error_rh
+        data_type: UNKNOWN
+      - name: perc_error_wind
+        data_type: UNKNOWN
+      - name: perc_error_solar
+        data_type: UNKNOWN
+      - name: perc_error_rain
+        data_type: UNKNOWN

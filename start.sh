@@ -37,7 +37,7 @@ case "$COMMAND" in
         ;;
     dashboard|local-dashboard)
         echo "Starting dashboard locally..."
-        streamlit run src/waid_08_2_viz_streamlit.py
+        streamlit run src/waid_08_2_viz_streamlit_app.py
         ;;
     docker-pipeline)
         echo "Starting pipeline in Docker (batch)..."

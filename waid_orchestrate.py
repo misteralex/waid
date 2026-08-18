@@ -22,25 +22,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from loguru import logger
 
-# Single entry point for configuration and output constants
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
+# Import WaidBoot configuration and utility classess
+sys.path.append(
+    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
+)
 from boot import (
     WaidBoot,
-    validate_period,
     WError,
+    WaidExit,
 )
 
 
 class PipelineRunner:
     """Handles execution of pipeline shell and dbt commands with logging and formatting."""
 
-    def __init__(self, env: WaidBoot):
+    def __init__(self, env: WaidBoot, mock_now: str = None):
+        """
+        Initializes the PipelineRunner with environment settings and optional mock timestamp.
+        
+        Args:
+            env (WaidBoot): The bootstrap configuration environment instance.
+            mock_now (str, optional): Simulated timestamp string for retroactive execution.
+        """
         self.env = env
+        self.mock_now = mock_now
 
     def get_dbt_base_args(self) -> list[str]:
-        """Builds base dbt arguments including operational bias threshold variables.
+        """Builds base dbt arguments including operational bias threshold variables,
+        profiles directory, and project directory.
 
-        @return List of dbt command line arguments.
+        @return List of dbt command line argument strings.
         """
         dbt_vars_dict = {
             "max_bias_temp": float(self.env.max_bias_temp),
@@ -51,7 +62,17 @@ class PipelineRunner:
             "max_bias_rain": float(self.env.max_bias_rain),
         }
 
+        if self.mock_now:
+            dbt_vars_dict["waid_mock_now"] = self.mock_now
+
+        profiles_dir = str(getattr(self.env, "config_dir", self.env.waid_source_dir / "config"))
+        dbt_dir = str(getattr(self.env, "dbt_dir", self.env.waid_source_dir / "dbt"))
+
         return [
+            "--profiles-dir",
+            profiles_dir,
+            "--project-dir",
+            dbt_dir,
             "--target",
             "dev",
             "--vars",
@@ -89,6 +110,16 @@ class PipelineRunner:
         logger.debug(f"{' '.join(command)}")
         logger.info(f"--- Context: {context} ---")
 
+        if self.mock_now:
+            logger.info(f"[MOCK MODE] Running with WAID_MOCK_NOW={self.mock_now}")
+
+        # Configura l'ambiente per il processo figlio propagando WAID_MOCK_NOW solo se presente
+        proc_env = os.environ.copy()
+        if self.mock_now:
+            proc_env["WAID_MOCK_NOW"] = self.mock_now
+        else:
+            proc_env.pop("WAID_MOCK_NOW", None)
+
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -96,6 +127,7 @@ class PipelineRunner:
             text=True,
             bufsize=1,
             cwd=self.env.waid_source_dir if "python" in command[0] else self.env.dbt_dir,
+            env=proc_env,
         )
 
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -145,12 +177,22 @@ def waid_00_1_dbt_clean(runner: PipelineRunner) -> int:
     logger.info("Cleaning dbt environment")
     return runner.run_command(["dbt", "clean"] + runner.get_dbt_base_args(), context="dbt-run")
 
-
+"""
 def waid_00_2_dbt_deps(runner: PipelineRunner) -> int:
-    """Installs missing dbt package dependencies."""
+    Installs missing dbt package dependencies.
     logger.info("Installing missing package dependencies")
     return runner.run_command(["dbt", "deps"] + runner.get_dbt_base_args(), context="dbt-run")
+"""
+def waid_00_2_dbt_deps(runner: PipelineRunner) -> int:
+    """Installs missing dbt package dependencies."""
+    packages_dir = Path("dbt_packages/dbt_utils")
+    if packages_dir.exists():
+        logger.info("dbt dependencies already present locally. Skipping download.")
+        return 0
 
+    logger.info("Installing missing package dependencies")
+    return runner.run_command(["dbt", "deps"] + runner.get_dbt_base_args(), context="dbt-run")
+    
 
 def waid_00_3_dbt_compile(runner: PipelineRunner) -> int:
     """Compiles the dbt project."""
@@ -171,8 +213,12 @@ def waid_00_4_dbt_dump_vars(runner: PipelineRunner) -> int:
 def waid_mock_update_ecowitt(runner: PipelineRunner, args: list) -> int:
     """Simulates Ecowitt and ERA5 data for testing."""
     logger.info("Simulating Ecowitt and ERA5 data")
+    cmd_args = list(args)
+    if runner.mock_now and "--mock-now" not in cmd_args:
+        cmd_args.extend(["--mock-now", runner.mock_now])
+
     return runner.run_command(
-        ["python", str(runner.env.tools_dir / "utils/waid_mock_update_ecowitt.py"), *args],
+        ["python", str(runner.env.tools_dir / "utils/waid_mock_update_ecowitt.py"), *cmd_args],
         context="Download",
     )
 
@@ -195,6 +241,15 @@ def waid_01_2_ingest_era5(runner: PipelineRunner, args: list) -> int:
     )
 
 
+def waid_01_3_profile_era5(runner: PipelineRunner, args: list) -> int:
+    """Profiles ERA5 NetCDF structure and data quality."""
+    logger.info("Profiling ERA5 data")
+    return runner.run_command(
+        ["python", str(runner.env.tools_dir / "waid_01_3_profile_era5.py"), *args],
+        context="Profiling",
+    )
+
+
 def waid_02_1_sync_ecowitt(runner: PipelineRunner, args: list) -> int:
     """Synchronizes raw Ecowitt telemetry into the SQLite database."""
     logger.info("Synchronizing Ecowitt with SQLite database")
@@ -204,29 +259,21 @@ def waid_02_1_sync_ecowitt(runner: PipelineRunner, args: list) -> int:
     )
     
 
-def waid_02_2_profile_era5(runner: PipelineRunner, args: list) -> int:
-    """Profiles ERA5 NetCDF structure and data quality."""
-    logger.info("Profiling ERA5 data")
-    return runner.run_command(
-        ["python", str(runner.env.tools_dir / "waid_02_2_profile_era5.py"), *args],
-        context="Profiling",
-    )
-
-
-def waid_02_3_dbt_clean_ecowitt(runner: PipelineRunner, args: list) -> int:
+def waid_02_2_dbt_clean_ecowitt(runner: PipelineRunner, args: list) -> int:
     """Runs dbt staging model and tests for cleaned Ecowitt telemetry."""
     logger.info("Staging table for cleaned and casted Ecowitt data")
-    logger.debug(f"Extra arguments: {args}")
+    period_val = args[args.index('--period') + 1] if '--period' in args else None
+    
     code = runner.run_command(
         ["dbt", "run", "--select", "stg_ecowitt"] + runner.get_dbt_base_args(),
-        context="dbt-run", period=args[args.index('--period') + 1]
+        context="dbt-run", period=period_val
     )
     if code != runner.env.waid_exit.SUCCESS:
         return code
 
     return runner.run_command(
         ["dbt", "test", "--select", "stg_ecowitt", "--store-failures"] + runner.get_dbt_base_args(),
-        context="dbt-test", period=args[args.index('--period') + 1]
+        context="dbt-test", period=period_val
     )
     
 
@@ -242,32 +289,36 @@ def waid_03_1_match_datasets(runner: PipelineRunner, args: list) -> int:
 def waid_03_2_dbt_matches(runner: PipelineRunner, args: list) -> int:
     """Runs dbt tests on matched raw data records."""
     logger.info("Bias Calculation (Discrepancy Analysis)")
+    period_val = args[args.index('--period') + 1] if '--period' in args else None
+    
     code = runner.run_command(
         ["dbt", "run", "--select", "source:external_raw.match_records"] + runner.get_dbt_base_args(),
-        context="dbt-run", period=args[args.index('--period') + 1]
+        context="dbt-run", period=period_val
     )
     if code != runner.env.waid_exit.SUCCESS:
         return code
 
     return runner.run_command(
         ["dbt", "test", "--select", "source:external_raw.match_records"] + runner.get_dbt_base_args(),
-        context="dbt-test",
+        context="dbt-test", period=period_val
     )
     
     
 def waid_03_3_dbt_matches_bias(runner: PipelineRunner, args: list) -> int:
     """Calculates and validates operational bias between Ecowitt and ERA5."""
     logger.info("Bias Calculation (Discrepancy Analysis)")
+    period_val = args[args.index('--period') + 1] if '--period' in args else None
+    
     code = runner.run_command(
         ["dbt", "run", "--select", "int_matches_bias"] + runner.get_dbt_base_args(),
-        context="dbt-run", period=args[args.index('--period') + 1]
+        context="dbt-run", period=period_val
     )
     if code != runner.env.waid_exit.SUCCESS:
         return code
 
     return runner.run_command(
         ["dbt", "test", "--select", "int_matches_bias"] + runner.get_dbt_base_args(),
-        context="dbt-test", period=args[args.index('--period') + 1]
+        context="dbt-test", period=period_val
     )
 
 
@@ -319,13 +370,18 @@ def waid_05_2_ml_train(runner: PipelineRunner) -> int:
     )
 
 
-def waid_06_1_inference_engine(runner: PipelineRunner) -> int:
-    """Executes the ML inference engine."""
+def waid_06_1_inference_engine(runner: PipelineRunner, args: list) -> int:
+    """Executes the ML inference engine with explicit mock-now propagation."""
     logger.info("Executing inference")
-    return runner.run_command(
-        ["python", str(runner.env.tools_dir / "waid_06_1_inference_engine.py")],
-        context="Profiling",
-    )
+    
+    # Costruiamo il comando base
+    cmd = ["python", str(runner.env.tools_dir / "waid_06_1_inference_engine.py")]
+    
+    # Passiamo esplicitamente mock-now se esiste nel runner
+    if runner.mock_now:
+        cmd.extend(["--mock-now", runner.mock_now])
+        
+    return runner.run_command(cmd, context="Profiling")
 
 
 def waid_06_2_inference_stats(runner: PipelineRunner) -> int:
@@ -355,33 +411,62 @@ def waid_06_4_dbt_inference_quality(runner: PipelineRunner) -> int:
     )
 
 
-def waid_06_5_inference_quality(runner: PipelineRunner) -> int:
+def waid_06_5_inference_quality(runner: PipelineRunner, args: list) -> int:
     """Checks inference quality metrics."""
     logger.info("Checking inference quality")
-    return runner.run_command(
-        ["python", str(runner.env.tools_dir / "waid_06_5_inference_quality.py")],
-        context="Profiling",
-    )
+    
+    cmd = ["python", str(runner.env.tools_dir / "waid_06_5_inference_quality.py")]
+    if runner.mock_now:
+        cmd.extend(["--mock-now", runner.mock_now])
+        
+    return runner.run_command(cmd, context="Profiling")
 
 
-def waid_07_1_inference_forecast(runner: PipelineRunner) -> int:
+def waid_07_1_inference_forecast(runner: PipelineRunner, args: list) -> int:
     """Evaluates 6-hour forecast inference quality."""
     logger.info("Checking 6h forecast inference quality")
-    return runner.run_command(
-        ["python", str(runner.env.tools_dir / "waid_07_1_inference_forecast.py")],
-        context="Profiling",
-    )
+    
+    cmd = ["python", str(runner.env.tools_dir / "waid_07_1_inference_forecast.py")]
+    if runner.mock_now:
+        cmd.extend(["--mock-now", runner.mock_now])
+        
+    return runner.run_command(cmd, context="Profiling")
 
 
-
-def waid_07_2_export_public_db(runner: PipelineRunner) -> int:
+def waid_07_2_export_deploy_db(runner: PipelineRunner, args: list) -> int:
     """Exports public weather data to the public database."""
     logger.info("Exporting public weather data")
-    return runner.run_command(
-        ["python", str(runner.env.tools_dir / "waid_07_2_export_public_db.py")],
-        context="Profiling",
-    )
     
+    cmd = ["python", str(runner.env.tools_dir / "waid_07_2_export_deploy_db.py")]
+    if runner.mock_now:
+        cmd.extend(["--mock-now", runner.mock_now])
+        
+    return runner.run_command(cmd, context="Profiling")
+   
+
+def waid_08_1_viz_streamlit_update(runner: PipelineRunner, args: list) -> int:
+    """Updates and pushes public dashboard analytics data."""
+    logger.info("Updating Streamlit dashboard analytics data")
+    
+    cmd = ["python", str(runner.env.tools_dir / "waid_08_1_viz_streamlit_update.py")]
+    return runner.run_command(cmd, context="Deployment")
+
+
+def waid_08_2_viz_streamlit_app(runner: PipelineRunner, args: list) -> int:
+    """Updates and pushes public dashboard analytics data with deployment setup."""
+    logger.info("Updating Streamlit dashboard analytics data and staging deployment package")
+    
+    cmd = [ "python", str(runner.env.tools_dir / "waid_08_2_viz_streamlit_app.py"), "--deploy" ]
+    return runner.run_command(cmd, context="Deployment")
+
+
+def waid_08_3_doc_dbt_deploy(runner: PipelineRunner, args: list) -> int:
+    """Generate and deploy the automated Markdown data dictionary from dbt data models."""
+    logger.info("Generate and deploy the automated Markdown data dictionary from dbt data models.")
+    
+    cmd = [ "python", str(runner.env.tools_dir / "waid_08_3_doc_dbt_deploy.py") ]
+    return runner.run_command(cmd, context="Deployment")
+
 
 # ==============================================================================
 # PIPELINE EXECUTION ENGINE & UTILS
@@ -428,7 +513,6 @@ def run_step_sequence(steps: list, runner: PipelineRunner, extra_args: list[str]
 
     code = runner.env.waid_exit.SUCCESS
     for step_func in steps:
-        # check if the step is a debug step and skip if debug mode is not enabled
         if step_func.__name__.split("_", 1)[0] == "debug":
             if runner.env.debug_mode:
                 logger.debug(f"Executing debug step: {step_func.__name__}")
@@ -451,7 +535,12 @@ def run_step_sequence(steps: list, runner: PipelineRunner, extra_args: list[str]
 
 
 def parse_arguments():
-    """Parses command-line arguments for the pipeline orchestrator."""
+    """
+    Parses command-line arguments for the pipeline orchestrator.
+    
+    Returns:
+        tuple: Parsed known arguments and extra unknown passthrough arguments.
+    """
     parser = argparse.ArgumentParser(description="WAID Pipeline Orchestrator")
     
     parser.add_argument(
@@ -464,6 +553,22 @@ def parse_arguments():
         "--skip-setup",
         action="store_true",
         help="Skip initial dbt setup steps (00_1 to 00_4)"
+    )
+    parser.add_argument(
+        "--skip-ingestion",
+        action="store_true",
+        help="Skip data ingestion and mock update steps"
+    )
+    parser.add_argument(
+        "--mock-now",
+        type=str,
+        default=None,
+        help="Simulated current timestamp for retroactive execution (YYYY-MM-DD HH:MM:SS)"
+    )
+    parser.add_argument(
+        "--only-setup",
+        action="store_true",
+        help="Run ONLY the initial dbt setup steps (00_1 to 00_4) and exit"
     )
     parser.add_argument(
         "--start-from",
@@ -501,94 +606,112 @@ def main() -> int:
     parsed_args, extra_passthrough_args = parse_arguments()
 
     env = WaidBoot()
-    runner = PipelineRunner(env)
+    runner = PipelineRunner(env, mock_now=parsed_args.mock_now)
+    
+    db_path = os.getenv("WAID_DB_MOCK_FILE") if env.waid_sim_mode else os.getenv("WAID_DB_FILE")
+    if parsed_args.skip_ingestion and not Path(db_path).exists():
+        logger.warning(f"Cannot skip Data Ingestion / Mock Update. Required path: {db_path}")
+        sys.exit(runner.env.waid_exit.INPUT_FAIL)
 
-    # ==============================================================================
-    # SETUP MODE HANDLING (0: Regime, 1: Soft Reset, 2: Hard Reset / Purge)
-    # ==============================================================================
-    setup_mode = int(os.getenv("WAID_SETUP_MODE", "0"))
-    data_dir = Path(env.waid_data_dir)
-    backup_dir = data_dir / "backups"
+    if parsed_args.skip_ingestion:
+        logger.warning("⚠️  Skipping data ingestion and mock update (--skip-ingestion flag active)")
+    else:
+        # ==============================================================================
+        # SETUP MODE HANDLING (0: Regime, 1: Soft Reset, 2: Hard Reset / Purge)
+        # ==============================================================================
+        setup_mode = int(os.getenv("WAID_SETUP_MODE", "0"))
+        data_dir = Path(env.waid_data_dir)
+        backup_dir = data_dir / "backups"
 
-    if setup_mode in [1, 2]:
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        if setup_mode in [1, 2]:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-        if setup_mode == 2:
-            logger.warning(f"--- HARD RESET (Mode 2): Purging ALL data in {data_dir} ---")
-            backup_name = backup_dir / f"backup_hard_reset_{timestamp_str}"
-            
-            logger.info(f"Creating full backup archive at {backup_name}.zip ...")
-            shutil.make_archive(str(backup_name), 'zip', data_dir, root_dir=data_dir)
-            
-            for item in data_dir.iterdir():
-                if item.name == "backups":
-                    continue
-                if item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-                else:
-                    item.unlink(missing_ok=True)
-                    
-            shutil.rmtree(env.dbt_dir / "target", ignore_errors=True)
-
-        elif setup_mode == 1:
-            logger.info(f"--- SOFT RESET (Mode 1): Preserving raw data, resetting DB & ML artifacts ---")
-            backup_name = backup_dir / f"backup_soft_reset_{timestamp_str}"
-            
-            logger.info(f"Creating lightweight backup at {backup_name} ...")
-            curr_backup_sub = Path(backup_name)
-            curr_backup_sub.mkdir(exist_ok=True)
-            
-            for item in data_dir.iterdir():
-                if item.suffix == ".db" or item.name in ["models", "tensors"]:
-                    dest = curr_backup_sub / item.name
-                    if item.is_dir():
-                        shutil.copytree(item, dest, dirs_exist_ok=True)
-                    else:
-                        shutil.copy2(item, dest)
-
-            for item in data_dir.iterdir():
-                if item.suffix == ".db" or item.name in ["models", "tensors"]:
+            if setup_mode == 2:
+                logger.warning(f"--- HARD RESET (Mode 2): Purging ALL data in {data_dir} ---")
+                backup_name = backup_dir / f"backup_hard_reset_{timestamp_str}"
+                
+                logger.info(f"Creating full backup archive at {backup_name}.zip ...")
+                shutil.make_archive(str(backup_name), 'zip', data_dir, root_dir=data_dir)
+                
+                for item in data_dir.iterdir():
+                    if item.name == "backups":
+                        continue
                     if item.is_dir():
                         shutil.rmtree(item, ignore_errors=True)
                     else:
                         item.unlink(missing_ok=True)
                         
-            shutil.rmtree(env.dbt_dir / "target", ignore_errors=True)
+                shutil.rmtree(env.dbt_dir / "target", ignore_errors=True)
 
-    else:
-        logger.info("--- REGIME MODE (Mode 0): Incremental execution ---")
+            elif setup_mode == 1:
+                logger.info(f"--- SOFT RESET (Mode 1): Preserving raw data, resetting DB & ML artifacts ---")
+                backup_name = backup_dir / f"backup_soft_reset_{timestamp_str}"
+                
+                logger.info(f"Creating lightweight backup at {backup_name} ...")
+                curr_backup_sub = Path(backup_name)
+                curr_backup_sub.mkdir(exist_ok=True)
+                
+                for item in data_dir.iterdir():
+                    if item.suffix == ".db" or item.name in ["models", "tensors"]:
+                        dest = curr_backup_sub / item.name
+                        if item.is_dir():
+                            shutil.copytree(item, dest, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(item, dest)
 
-    # 1. Setup Phase Steps (00)
-    setup_steps = [
-        waid_00_1_dbt_clean,
-        waid_00_2_dbt_deps,
-        waid_00_3_dbt_compile,
-        waid_00_4_dbt_dump_vars,
-    ]
+                for item in data_dir.iterdir():
+                    if item.suffix == ".db" or item.name in ["models", "tensors"]:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink(missing_ok=True)
+                            
+                shutil.rmtree(env.dbt_dir / "target", ignore_errors=True)
 
-    if not parsed_args.skip_setup:
-        code = run_step_sequence(setup_steps, runner, extra_passthrough_args, start_from=parsed_args.start_from)
-        if code != runner.env.waid_exit.SUCCESS:
+        else:
+            logger.info("--- REGIME MODE (Mode 0): Incremental execution ---")
+
+        if parsed_args.skip_setup:
+                logger.warning("⚠️  Skipping DBT setup steps (--skip-setup flag active)")
+                code = runner.env.waid_exit.SUCCESS
+        else:
+            # 1. Setup Phase Steps (00_1 to 00_4)
+            setup_steps = [
+                waid_00_1_dbt_clean,
+                waid_00_2_dbt_deps,
+                waid_00_3_dbt_compile,
+                waid_00_4_dbt_dump_vars,
+            ]
+
+            code = run_step_sequence(setup_steps, runner, extra_passthrough_args, start_from=parsed_args.start_from)
+            if code == runner.env.waid_exit.SUCCESS:
+                logger.success("--- Setup successfully completed ---")
+            else:
+                logger.error(f"--- Setup failed with error (code={code}) ---")
+
+        if parsed_args.only_setup:
+            logger.info("--- Executing ONLY DBT Setup steps (--only-setup active) ---")
             return code
-    else:
-        logger.info("⏩ Skipping DBT Setup steps (--skip-setup flag active)")
 
-    # 2. Data Preparation Steps (01 to 05_1)
+    # Data Preparation Steps
     data_prep_steps = []
-    if runner.env.waid_sim_mode:
-        logger.info("Simulation mode active. Using mock data generation.")
-        data_prep_steps.append(waid_mock_update_ecowitt)
+
+    if env.waid_sim_mode:           
+        data_prep_steps.append(waid_mock_update_ecowitt)  
     else:
         data_prep_steps.extend([
             waid_01_1_ingest_ecowitt,
             waid_01_2_ingest_era5,
+            waid_01_3_profile_era5,
         ])
 
+    if env.waid_sim_mode: 
+        logger.warning(f"⏩ Simulation mode active. Running mock data generation using mock database ({env.waid_db})")
+            
     data_prep_steps.extend([
         waid_02_1_sync_ecowitt,
-        waid_02_2_profile_era5,
-        waid_02_3_dbt_clean_ecowitt,
+        waid_02_2_dbt_clean_ecowitt,
         waid_03_1_match_datasets,
         waid_03_2_dbt_matches,
         waid_03_3_dbt_matches_bias,
@@ -606,43 +729,64 @@ def main() -> int:
         waid_06_4_dbt_inference_quality,
         waid_06_5_inference_quality,
         waid_07_1_inference_forecast,
-        waid_07_2_export_public_db,
+        waid_07_2_export_deploy_db,
+        waid_08_1_viz_streamlit_update,
+        waid_08_2_viz_streamlit_app,
+        waid_08_3_doc_dbt_deploy,
     ]
 
     # ==============================================================================
     # PIPELINE RUN MODES LOGIC
     # ==============================================================================
+    incremental_args = list(extra_passthrough_args)
+    if parsed_args.period:
+        incremental_args.extend(["--period", parsed_args.period])
+        
+    if not parsed_args.skip_ingestion:
+        #incremental_args = list(extra_passthrough_args)
+        #if parsed_args.period:
+        #    incremental_args.extend(["--period", parsed_args.period])
+                
+        if parsed_args.run_mode == "backfill":
+            start_p = parsed_args.begin_period or parsed_args.period
+            end_p = parsed_args.end_period or parsed_args.period
 
-    if parsed_args.run_mode == "backfill":
-        start_p = parsed_args.begin_period or parsed_args.period
-        end_p = parsed_args.end_period or parsed_args.period
+            if not start_p or not end_p:
+                logger.error("Backfill mode requires --period YYYY-MM (or both --begin-period and --end-period)")
+                return runner.env.waid_exit.INPUT_FAIL
 
-        if not start_p or not end_p:
-            logger.error("Backfill mode requires --period YYYY-MM (or both --begin-period and --end-period)")
-            return runner.env.waid_exit.INPUT_FAIL
+            periods = generate_period_range(start_p, end_p)
+            logger.debug(f"Starting BACKFILL execution for periods: {periods}")
 
-        periods = generate_period_range(start_p, end_p)
-        logger.info(f"Starting BACKFILL execution for periods: {periods}")
+            for p in periods:
+                logger.info(f"--- Processing Data Preparation for period: {p} ---")
+                period_args = extra_passthrough_args + ["--period", p]
+                code = run_step_sequence(data_prep_steps, runner, period_args, start_from=parsed_args.start_from)
+                if code != runner.env.waid_exit.SUCCESS:
+                    logger.error(f"Backfill halted due to error in period {p}")
+                    return code
 
-        for p in periods:
-            logger.info(f"--- Processing Data Preparation for period: {p} ---")
-            period_args = extra_passthrough_args + ["--period", p]
-            code = run_step_sequence(data_prep_steps, runner, period_args, start_from=parsed_args.start_from)
-            if code != runner.env.waid_exit.SUCCESS:
-                logger.error(f"Backfill halted due to error in period {p}")
-                return code
+            logger.info("Data preparation backfill completed. Starting Global Machine Learning & Inference.")
+            ml_args = ["--period", end_p] if end_p else []
+            code = run_step_sequence(ml_and_inference_steps, runner, ml_args, start_from=parsed_args.start_from)
 
-        logger.info("Data preparation backfill completed. Starting Global Machine Learning & Inference.")
-        code = run_step_sequence(ml_and_inference_steps, runner, extra_passthrough_args, start_from=parsed_args.start_from)
-
-    else:  # Incremental Mode
-        logger.info("Starting INCREMENTAL execution")
+        else:  # Incremental Mode
+            logger.debug("Starting INCREMENTAL execution")
+            """
+            incremental_args = list(extra_passthrough_args)
+            if parsed_args.period:
+                incremental_args.extend(["--period", parsed_args.period])
+            """
+            full_pipeline = data_prep_steps + ml_and_inference_steps
+            code = run_step_sequence(full_pipeline, runner, incremental_args, start_from=parsed_args.start_from)
+    else:
+        logger.warning("Skipping data ingestion and preparation steps (--skip-ingestion flag active)")
+        """
         incremental_args = list(extra_passthrough_args)
         if parsed_args.period:
             incremental_args.extend(["--period", parsed_args.period])
-
-        full_pipeline = data_prep_steps + ml_and_inference_steps
-        code = run_step_sequence(full_pipeline, runner, incremental_args, start_from=parsed_args.start_from)
+        """
+        code = run_step_sequence(ml_and_inference_steps, runner, incremental_args, start_from=parsed_args.start_from)
 
     if code == runner.env.waid_exit.SUCCESS:
         logger.success("--- Pipeline successfully terminated ---")

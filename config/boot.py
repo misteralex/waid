@@ -1,10 +1,18 @@
+"""
+@file config.py
+@brief Core bootstrap and configuration module for the WAID pipeline.
+@details Handles environment variable resolution, validation, logging setup, 
+         and global settings classes.
+"""
+
 import os
 import sys
+import shutil
 import pprint
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from typing import Any, List, Dict, Optional, TypeVar, Type
+from typing import Any, List, Dict, Optional
 
 # Pre-define environment variable for Loguru colorization
 os.environ["LOGURU_COLORIZE"] = "1"
@@ -17,18 +25,33 @@ from loguru import logger
 # ==============================================================================
 
 class WError(Exception):
-    """Custom Base Exception for the application."""
-    def __init__(self, message: str, code: int = 1):
+    """
+    @brief Custom Base Exception for the application.
+    """
+    def __init__(self, message: str, code: int = 1) -> None:
+        """
+        @brief Initializes the custom application exception with a message and error code.
+        
+        @param message Error description message.
+        @param code Numeric error exit status code.
+        """
         self.message = message
         self.code = code
         super().__init__(message)
 
     def __str__(self) -> str:
+        """
+        @brief Returns the string representation of the exception message.
+        
+        @return Error message string.
+        """
         return self.message
 
 
 class WaidExit:
-    """Exit status codes for process termination."""
+    """
+    @brief Exit status codes for process termination.
+    """
     SUCCESS = 0
     CRITICAL_FAIL = 1
     INPUT_FAIL = 2
@@ -44,14 +67,23 @@ class WaidExit:
 # ==============================================================================
 
 def _expand_environment_variables(iterations: int = 2) -> None:
-    """Pass through os.environ multiple times to resolve nested environment variables."""
+    """
+    @brief Pass through os.environ multiple times to resolve nested environment variables.
+    
+    @param iterations Number of times to traverse and expand environment variables.
+    """
     for _ in range(iterations):
         for key, value in os.environ.items():
             os.environ[key] = os.path.expandvars(value)
 
 
 def execution_guard(guard_name: str) -> bool:
-    """Replicates '#ifndef GUARD_NAME' behavior to prevent repetitive execution."""
+    """
+    @brief Replicates '#ifndef GUARD_NAME' behavior to prevent repetitive execution.
+    
+    @param guard_name Identifier name for the execution guard check.
+    @return True if execution can proceed, False if it was already executed.
+    """
     env_var = f"PRJ_GUARD_{guard_name.upper()}"
     if os.environ.get(env_var) == "1":
         return False
@@ -79,7 +111,20 @@ os.environ["WAID_SOURCE"] = waid_source
 
 # Re-evaluate WAID_CONFIG_DIR dynamically based on current WAID_SOURCE
 config_dir = Path(waid_source) / "config"
+env_file = config_dir / "waid.env"
+example_file = config_dir / "waid.env.example"
 os.environ["WAID_CONFIG_DIR"] = str(config_dir)
+
+if not env_file.exists():
+    if example_file.exists():
+        shutil.copy(example_file, env_file)
+        print(
+            "WARNING: waid.env not found. Automatically generated from waid.env.example. Please update it with actual configurations if needed."
+        )
+    else:
+        raise FileNotFoundError(
+            f"Critical: Neither waid.env nor waid.env.example found in {config_dir}"
+        )
 
 # Load global target environment file (waid.env)
 WAID_ENV_FILE = config_dir / "waid.env"
@@ -96,14 +141,22 @@ else:
 # ==============================================================================
 
 class BaseConfig:
-    """Base class providing automated validation and introspection capabilities."""
+    """
+    @brief Base class providing automated validation and introspection capabilities.
+    """
     
-    def _validate_config(self) -> None:
+    def _validate_config(self, optional_fields: Optional[set] = None) -> None:
+        """
+        @brief Validates configuration instance attributes, checking for missing or unresolved values.
+        
+        @param optional_fields Set of field names to ignore during validation checks.
+        """
         missing_fields = []
         unresolved_fields = []
+        optional_fields = optional_fields or set()
         
         for key, value in self.__dict__.items():
-            if key.startswith('_'):
+            if key.startswith('_') or key in optional_fields:
                 continue
             if value is None:
                 missing_fields.append(key.upper())
@@ -122,7 +175,9 @@ class BaseConfig:
             sys.exit(WaidExit.CONFIG_FAIL)
 
     def dump(self) -> None:
-        """Log active configuration settings for debugging purposes."""
+        """
+        @brief Log active configuration settings for debugging purposes.
+        """
         class_name = self.__class__.__name__
         logger.debug(f"=== [DEBUG] {class_name} COMPLETE CONFIG ===")
         for key, value in self.__dict__.items():
@@ -134,11 +189,24 @@ class BaseConfig:
 
     @staticmethod
     def _get_path_env(name: str) -> Optional[Path]:
+        """
+        @brief Retrieves a path string from environment variables and converts it to a resolved Path object.
+        
+        @param name Environment variable name.
+        @return Resolved Path object or None if absent.
+        """
         value = os.getenv(name)
         return Path(value).resolve() if value else None
 
     @staticmethod
     def _get_int_env(name: str, default: Optional[int] = None) -> Optional[int]:
+        """
+        @brief Retrieves an integer value from environment variables.
+        
+        @param name Environment variable name.
+        @param default Fallback value if parsing fails or variable is missing.
+        @return Parsed integer value or default fallback.
+        """
         value = os.getenv(name)
         if value is None:
             return default
@@ -150,6 +218,13 @@ class BaseConfig:
 
     @staticmethod
     def _get_float_env(name: str, default: Optional[float] = None) -> Optional[float]:
+        """
+        @brief Retrieves a float value from environment variables.
+        
+        @param name Environment variable name.
+        @param default Fallback value if parsing fails or variable is missing.
+        @return Parsed float value or default fallback.
+        """
         value = os.getenv(name)
         if value is None:
             return default
@@ -161,9 +236,14 @@ class BaseConfig:
 
 
 class BootSettings(BaseConfig):
-    """Essential settings required to bootstrap application execution."""
+    """
+    @brief Essential settings required to bootstrap application execution.
+    """
     
     def __init__(self) -> None:
+        """
+        @brief Initializes core boot settings from environment parameters.
+        """
         self.waid_source_dir: Optional[Path] = self._get_path_env("WAID_SOURCE")
         self.waid_data_dir: Optional[Path] = self._get_path_env("WAID_DATA_DIR")
         self.log_dir: Optional[Path] = self._get_path_env("WAID_LOG_DIR")
@@ -175,7 +255,9 @@ class BootSettings(BaseConfig):
 
 
 class WaidSettings(BaseConfig):
-    """Application-level configurations and pipeline specifications."""
+    """
+    @brief Application-level configurations and pipeline specifications.
+    """
         
     # Unified Weather Features Configuration mapping
     ML_OUTPUT_FEATURES: List[Dict[str, str]] = [
@@ -201,10 +283,8 @@ class WaidSettings(BaseConfig):
             "bias_col": "bias_pres",
             "ecowitt_match": "ecowitt_pres",
             "standard": "pressure_hpa",
-            #"ecowitt_field": "rel_pressure_hpa"
             "ecowitt_field": "abs_pressure_hpa",
         },
-
         {
             "name": "Wind speed",
             "unit": "m/s",
@@ -243,6 +323,11 @@ class WaidSettings(BaseConfig):
     ML_INPUT_FEATURES_MATCH = ([f["ecowitt_match"] for f in ML_OUTPUT_FEATURES] + ML_AUXILIARY_FEATURES)
     
     def __init__(self, boot_settings: BootSettings) -> None:
+        """
+        @brief Initializes pipeline-level settings and model features based on boot settings.
+        
+        @param boot_settings The loaded bootstrap settings instance.
+        """
         self.config_dir: Optional[Path] = self._get_path_env("WAID_CONFIG_DIR")
         self.log_dir: Optional[Path] = self._get_path_env("WAID_LOG_DIR")
         self.deploy_dir: Optional[Path] = self._get_path_env("WAID_DEPLOY_DIR")
@@ -255,7 +340,7 @@ class WaidSettings(BaseConfig):
         self.input_features_match = self.ML_INPUT_FEATURES_MATCH
         self.n_input_features: int = len(self.input_features)
         self.n_output_features: int = len(self.output_features)
-        
+
         # Dynamic Simulation vs Production DB toggle
         self.waid_sim_mode: bool = os.getenv("WAID_SIM_MODE", "false").lower() == "true"
         if self.waid_sim_mode:
@@ -295,6 +380,7 @@ class WaidSettings(BaseConfig):
         self.era5_api_url: Optional[str] = os.getenv("WAID_ERA5_API_URL")
         self.era5_api_key: Optional[str] = os.getenv("WAID_ERA5_API_KEY")
         
+        # Forecasting & Lookback Parameters
         self.forecast_horizon_hours: Optional[int] = self._get_int_env("WAID_FORECAST_HORIZON_HOURS")
         self.lookback_hours: Optional[int] = self._get_int_env("WAID_LOOKBACK_HOURS", 24)
         self.fastapi_port: Optional[int] = self._get_int_env("WAID_FASTAPI_PORT", 8000)      
@@ -328,6 +414,8 @@ class WaidSettings(BaseConfig):
         self.scheduled_interval_sec: Optional[int] = self._get_int_env("SCHEDULER_INTERVAL_SEC", 3600)
         self.backfill_begin_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_BEGIN_PERIOD"))
         self.backfill_end_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_END_PERIOD"))
+        self.mock_now: Optional[datetime] = validate_mock_timestamp(os.getenv("WAID_MOCK_NOW"))
+        self.mock_interval_hours: int = self._get_int_env("WAID_MOCK_INTERVAL_HOURS", 1)
 
         # Number of lookback days for historical prediction reconciliation
         self.reconciliation_cutoff_days: Optional[int] = self._get_int_env("WAID_RECONCILIATION_CUTOFF_DAYS", 6)
@@ -337,27 +425,56 @@ class WaidSettings(BaseConfig):
             self.dump()
 
     def _validate_config(self) -> None:
-        """Overridden configuration validator including station metadata sanity checks."""
-        super()._validate_config()
+        """
+        @brief Overridden configuration validator.
+        @details 1. Validates base configuration excluding explicitly optional fields.
+                    - 'mock_now' and 'backfill_period' are optional for business logic.
+                 2. Performs sanity checks on station metadata and structural requirements.
+        """
+        super()._validate_config(optional_fields={
+            "mock_now", 
+            "backfill_begin_period", 
+            "backfill_end_period"
+        })
+        
         station_errors = []
 
+        # Station ID check
         if not self.ecowitt_station_id or not str(self.ecowitt_station_id).strip():
             station_errors.append("WAID_ECOWITT_STATION_ID is missing or empty.")
 
+        # Station Name check
         if not self.ecowitt_station_name or not str(self.ecowitt_station_name).strip():
             station_errors.append("WAID_ECOWITT_STATION_NAME is missing or empty.")
 
+        # Elevation vs Floor check
         if self.ecowitt_elevation_m is None and self.ecowitt_floor is None:
             station_errors.append(
                 "Missing station height configuration! Specify either WAID_ECOWITT_ELEVATION_M "
                 "(relative height in meters) or WAID_ECOWITT_FLOOR in environment config."
             )
 
+        # Simulation mode check: requires mock file if enabled
+        if self.waid_sim_mode and not self.waid_db:
+            station_errors.append(
+                "WAID_SIM_MODE is True, but WAID_DB_MOCK_FILE is missing in environment config."
+            )
+
+        # Block execution if errors exist
         if station_errors:
-            logger.critical("\n[!] STATION METADATA SANITY CHECK FAILURE:\n" + "\n".join(f" - {err}" for err in station_errors))
+            logger.critical(
+                "\n[!] STATION METADATA SANITY CHECK FAILURE:\n" + 
+                "\n".join(f" - {err}" for err in station_errors)
+            )
             sys.exit(WaidExit.CONFIG_FAIL)
 
     def _validate_timezone(self, tz_str: str) -> str:
+        """
+        @brief Validates the timezone identifier string against IANA database.
+        
+        @param tz_str The timezone string to validate (e.g., 'Europe/Rome').
+        @return Validated timezone string.
+        """
         try:
             ZoneInfo(tz_str)
             return tz_str
@@ -374,7 +491,12 @@ class WaidSettings(BaseConfig):
 # ==============================================================================
 
 def validate_period(value: str) -> datetime:
-    """Validates YYYY-MM inputs and converts them into standard datetime instances."""
+    """
+    @brief Validates YYYY-MM inputs and converts them into standard datetime instances.
+    
+    @param value Period string formatted as YYYY-MM.
+    @return Parsed datetime instance.
+    """
     try:
         return datetime.strptime(value, "%Y-%m")
     except ValueError:
@@ -382,6 +504,22 @@ def validate_period(value: str) -> datetime:
         sys.exit(WaidExit.INPUT_FAIL)
 
 
+def validate_mock_timestamp(value: Optional[str]) -> Optional[datetime]:
+    """
+    @brief Validates YYYY-MM-DD HH:MM:SS inputs for mock simulation and converts them into standard datetime instances.
+    
+    @param value Timestamp string.
+    @return Parsed datetime instance or None if not provided.
+    """
+    if value is None or str(value).lower() in ("none", "null", ""):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        logger.error(f"[CRITICAL] Invalid mock timestamp format: '{value}'. Expected format is YYYY-MM-DD HH:MM:SS.", file=sys.stderr)
+        sys.exit(WaidExit.INPUT_FAIL)
+        
+        
 # ==============================================================================
 # INITIALIZATION RUNTIME
 # ==============================================================================
@@ -392,17 +530,31 @@ boot_env = BootSettings()
 waid_settings_instance = WaidSettings(boot_settings=boot_env)
 
 class WaidBoot:
-    """Unified access interface for bootstrap configuration components."""
+    """
+    @brief Unified access interface for bootstrap configuration components.
+    """
     def __init__(
         self, 
         boot_settings: Optional[BootSettings] = None, 
         settings: Optional[WaidSettings] = None
     ) -> None:
+        """
+        @brief Initializes the unified boot access wrapper.
+        
+        @param boot_settings BootSettings instance.
+        @param settings WaidSettings instance.
+        """
         self._boot_settings = boot_settings or boot_env
         self._settings = settings or waid_settings_instance
         self.waid_exit = WaidExit()
 
     def __getattr__(self, name: str) -> Any:
+        """
+        @brief Delegates attribute access to underlying configuration instances.
+        
+        @param name Attribute name to retrieve.
+        @return Requested attribute value.
+        """
         if hasattr(self._boot_settings, name):
             return getattr(self._boot_settings, name)
         if hasattr(self._settings, name):
@@ -410,7 +562,6 @@ class WaidBoot:
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
-#if boot_env.log_level.upper() == "DEBUG":
 if boot_env.debug_mode:
     logger.debug(f"WAID_VERSION = {repr(os.environ.get('WAID_VERSION'))} (configuration source: waid.env)")
 

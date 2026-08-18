@@ -19,7 +19,7 @@ from loguru import logger
 import urllib.request
 import glob
 
-# Single entry point for configuration and output constants
+# Import WaidBoot configuration and utility classess
 sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
 from boot import (
     WaidBoot,

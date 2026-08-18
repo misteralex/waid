@@ -1,14 +1,130 @@
 version: 2
-
 sources:
   - name: external_raw
     database: main
     schema: main
-    description: "Tables populated externally by Python scripts"
+    description: Tables populated externally by Python scripts
     tables:
       - name: ecowitt_records
-        description: "Raw hourly weather data from the Ecowitt station"
+        description: Raw hourly weather data from the Ecowitt station
+        columns:
+          - name: timestamp
+            data_type: TEXT
+          - name: epoch_timestamp
+            data_type: INTEGER
+          - name: indoor_temperature_c
+            data_type: REAL
+          - name: indoor_humidity
+            data_type: REAL
+          - name: outdoor_temperature_c
+            data_type: REAL
+          - name: outdoor_humidity
+            data_type: REAL
+          - name: dew_point_c
+            data_type: REAL
+          - name: feels_like_c
+            data_type: REAL
+          - name: vpd_kpa
+            data_type: REAL
+          - name: wind_m_s
+            data_type: REAL
+          - name: gust_m_s
+            data_type: REAL
+          - name: wind_direction_deg
+            data_type: REAL
+          - name: abs_pressure_hpa
+            data_type: REAL
+          - name: rel_pressure_hpa
+            data_type: REAL
+          - name: solar_rad_w_m2
+            data_type: REAL
+          - name: uv_index
+            data_type: REAL
+          - name: rain_rate_mm_hr
+            data_type: REAL
+          - name: hourly_rain_mm
+            data_type: REAL
+          - name: event_rain_mm
+            data_type: REAL
+          - name: daily_rain_mm
+            data_type: REAL
+          - name: weekly_rain_mm
+            data_type: REAL
+          - name: monthly_rain_mm
+            data_type: REAL
+          - name: yearly_rain_mm
+            data_type: REAL
+          - name: piezo_rate_mm_hr
+            data_type: REAL
+          - name: piezo_hourly_rain_mm
+            data_type: REAL
+          - name: piezo_event_rain_mm
+            data_type: REAL
+          - name: piezo_daily_rain_mm
+            data_type: REAL
+          - name: piezo_weekly_rain_mm
+            data_type: REAL
+          - name: piezo_monthly_rain_mm
+            data_type: REAL
+          - name: piezo_yearly_rain_mm
+            data_type: REAL
       - name: match_records
-        description: "Hourly data paired and synchronized between Ecowitt and ERA5"
+        description: Hourly data paired and synchronized between Ecowitt and ERA5
+        columns:
+          - name: timestamp
+            data_type: TEXT
+          - name: temp_era5
+            data_type: REAL
+          - name: pres_era5
+            data_type: REAL
+          - name: rh_era5
+            data_type: REAL
+          - name: wind_era5
+            data_type: REAL
+          - name: solar_era5
+            data_type: REAL
+          - name: rain_era5
+            data_type: REAL
+          - name: temp_eco
+            data_type: REAL
+          - name: pres_eco
+            data_type: REAL
+          - name: rh_eco
+            data_type: REAL
+          - name: wind_eco
+            data_type: REAL
+          - name: solar_eco
+            data_type: REAL
+          - name: rain_eco
+            data_type: REAL
       - name: inference_records
-        description: "Inference records produced by the ML model"
+        description: Inference records produced by the ML model
+        columns:
+          - name: id
+            data_type: INTEGER
+          - name: ts_emission
+            data_type: DATETIME
+          - name: ts_window_start
+            data_type: DATETIME
+          - name: ts_window_end
+            data_type: DATETIME
+          - name: timestamp
+            data_type: DATETIME
+          - name: model_version
+            data_type: TEXT
+          - name: model_version_tag
+            data_type: TEXT
+          - name: n_features_used
+            data_type: INTEGER
+          - name: outdoor_temperature_c
+            data_type: REAL
+          - name: outdoor_humidity
+            data_type: REAL
+          - name: abs_pressure_hpa
+            data_type: REAL
+          - name: wind_m_s
+            data_type: REAL
+          - name: solar_rad_w_m2
+            data_type: REAL
+          - name: hourly_rain_mm
+            data_type: REAL

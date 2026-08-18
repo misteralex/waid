@@ -1,3 +1,13 @@
+
+"""
+@file waid_shared.py
+@brief serves as the core utility and data processing engine for the Weather-AI project. It acts as a bridge between 
+       raw meteorological data and machine learning pipelines by centralizing time-series resampling, astronomical 
+       clear-sky calculations, and hardware-specific sensor calibration guardrails
+@author AF
+@date 2026
+"""
+
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -6,7 +16,6 @@ from pathlib import Path
 from loguru import logger
 import json
 from boot import WaidBoot, WError, WaidExit
-
 
 def calculate_theoretical_solar_radiation(
     timestamps: np.ndarray, 
@@ -17,32 +26,34 @@ def calculate_theoretical_solar_radiation(
     """
     Computes theoretical clear-sky solar radiation based on UTC time of day,
     day of the year, and geographical coordinates to prevent daylight saving time shifts.
+
+    Args:
+        timestamps (np.ndarray): Array of timestamps.
+        lat (float): Latitude of the station.
+        lon (float): Longitude of the station.
+        local_tz (str): Local timezone for localization.
+
+    Returns:
+        np.ndarray: Theoretical solar radiation values in W/m^2.
     """
     solar_rad = []
     
-    # Convert input timestamps to a Pandas DatetimeIndex
     dt_index = pd.to_datetime(timestamps)
     
-    # Correctly localize naive timestamps using local_tz before converting to UTC
     if dt_index.tz is None:
-        dt_index = dt_index.tz_localize(local_tz).tz_convert("UTC")
+        dt_index = dt_index.tz_localize(local_tz, nonexistent='shift_forward').tz_convert("UTC")
     else:
         dt_index = dt_index.tz_convert("UTC")
 
     for dt in dt_index:
-        # Use UTC hour to align solar calculations correctly regardless of local daylight saving time (CEST)
         hour = dt.hour + dt.minute / 60.0
         day_of_year = dt.dayofyear
         
-        # Simplified astronomical model for solar elevation angle approximation
         declination = 23.45 * np.sin(np.radians(360.0 * (284 + day_of_year) / 365.0))
         
-        # Approximate solar elevation based on UTC hour and longitude adjustment
-        # Longitude correction: 4 minutes per degree from the reference meridian
         longitude_correction = (lon / 15.0)
         hour_angle = 15.0 * (hour - 12.0 + longitude_correction)
         
-        # Elevation angle calculation
         lat_rad = np.radians(lat)
         dec_rad = np.radians(declination)
         ha_rad = np.radians(hour_angle)
@@ -62,7 +73,17 @@ def calculate_theoretical_solar_radiation(
 
 
 def fetch_and_resample_ecowitt(env, start_date: str, end_date: str) -> pd.DataFrame:
-    """Extracts Ecowitt raw data, applies type casting, resampling, and bounded interpolation."""
+    """
+    Extracts Ecowitt raw data, applies type casting, resampling, and bounded interpolation.
+
+    Args:
+        env (WaidBoot): Environment configuration.
+        start_date (str): Start window for extraction.
+        end_date (str): End window for extraction.
+
+    Returns:
+        pd.DataFrame: Processed hourly sensor data.
+    """
     logger.info(f"Connecting to Ecowitt Database: {env.waid_db}")
     if not Path(env.waid_db).exists():
         raise RuntimeError(f"WAID DB file not found at: {env.waid_db}")
@@ -90,11 +111,9 @@ def fetch_and_resample_ecowitt(env, start_date: str, end_date: str) -> pd.DataFr
     if df_eco_raw.empty:
         raise RuntimeError("No local station records retrieved from database for the specified window.")
 
-    # Timezone handling based on environment configuration
     target_tz = env.tz_timezone
     df_eco_raw["timestamp"] = pd.to_datetime(df_eco_raw["timestamp"], utc=True).dt.tz_convert(target_tz).dt.tz_localize(None)
 
-    # Explicit cast from TEXT/String to Numeric types (REAL)
     target_numeric_fields = [
         "outdoor_temperature_c",
         "abs_pressure_hpa",
@@ -131,7 +150,13 @@ def fetch_and_resample_ecowitt(env, start_date: str, end_date: str) -> pd.DataFr
             f"Applying bounded time interpolation (max threshold: {env.max_interpolate_hours}h / {max_steps} steps)..."
         )
         df_eco_hourly = df_eco_hourly.interpolate(method="time", limit=max_steps)
-
+        
+        # Apply physical domain guardrails using the unified function
+        for col, feat in [("hourly_rain_mm", "rain"), ("outdoor_humidity", "rh"), 
+                          ("solar_rad_w_m2", "solar"), ("wind_m_s", "wind")]:
+            if col in df_eco_hourly.columns:
+                df_eco_hourly[col] = apply_physics_guardrails(df_eco_hourly[col], feature=feat)
+            
     return df_eco_hourly.reset_index()
 
 
@@ -141,7 +166,6 @@ def get_station_metadata(env: WaidBoot) -> tuple[str, str, int, int, int, dict]:
     from the SQLite Feature Store station_metadata table.
     """
     station_id = env.ecowitt_station_id
-    
     query = """
         SELECT station_name, elevation_m, min_training_days, retrain_window_days, sensor_specs
         FROM station_metadata
@@ -161,7 +185,6 @@ def get_station_metadata(env: WaidBoot) -> tuple[str, str, int, int, int, dict]:
 
         station_name, elevation_m, min_training_days, retrain_window_days, sensor_specs_json = row
         
-        # Default professional hardware specifications as a robust fallback
         default_specs = {
             'ecowitt_temp': {'resolution': 0.1, 'deadband': 0.0},
             'ecowitt_rh': {'resolution': 1.0, 'deadband': 0.0},
@@ -180,9 +203,81 @@ def get_station_metadata(env: WaidBoot) -> tuple[str, str, int, int, int, dict]:
         return station_id, str(station_name), int(elevation_m), int(min_training_days), int(retrain_window_days), sensor_specs
 
     except sqlite3.OperationalError as e:
-        raise WError(
-            f"Failed to access 'station_metadata' table ({e}). Ensure dbt and setup specs pipelines have run.",
-            code=WaidExit.DATA_FAIL
-        )
+        raise WError(f"Failed to access 'station_metadata' table ({e}).", code=WaidExit.DATA_FAIL)
     except sqlite3.Error as e:
         raise WError(f"Database error while fetching station metadata: {e}", code=WaidExit.DATA_FAIL)
+
+
+def apply_physics_guardrails(
+    data, 
+    feature: str = None, 
+    sensor_specs: dict = None, 
+    env: WaidBoot = None, 
+    future_timestamps: list = None
+) -> np.ndarray:
+    """
+    Unified function for physics-based guardrails, hardware resolution, and noise suppression.
+    
+    Can handle single values, Pandas Series (for dashboard), or full prediction batches (for inference).
+
+    Args:
+        data (np.ndarray|pd.Series|float): Input data to clean.
+        feature (str, optional): The feature type (e.g., 'temp', 'wind').
+        sensor_specs (dict, optional): Hardware sensor specifications.
+        env (WaidBoot, optional): Environment context (required for full batch inference).
+        future_timestamps (list, optional): Timestamps (required for full batch inference).
+
+    Returns:
+        np.ndarray: Cleaned and quantized data.
+    """
+    # Load default specs if not provided
+    if sensor_specs is None:
+        sensor_specs = {
+            'ecowitt_temp': {'resolution': 0.1, 'deadband': 0.0},
+            'ecowitt_rh': {'resolution': 1.0, 'deadband': 0.0},
+            'ecowitt_pres': {'resolution': 0.1, 'deadband': 0.0},
+            'ecowitt_wind': {'resolution': 0.1, 'deadband': 0.2},
+            'ecowitt_solar': {'resolution': 1.0, 'deadband': 0.0},
+            'ecowitt_rain': {'resolution': 0.2, 'deadband': 0.2}
+        }
+
+    # Handle Dashboard / Single-feature mode
+    if feature:
+        spec = sensor_specs.get(f'ecowitt_{feature}', {'resolution': 0.1, 'deadband': 0.0})
+        res, db = spec['resolution'], spec['deadband']
+        
+        # Apply non-negativity (for all except temperature)
+        val = data if feature == 'temp' else np.maximum(0.0, data)
+        
+        # Use resolution directly as the sensitivity threshold instead of an aggressive deadband
+        threshold = res / 2.0
+        val = np.where(val < threshold, 0.0, val)
+        
+        # Apply quantization based on sensor resolution
+        return np.round(val / res) * res
+
+    # Handle Full Batch Inference mode
+    is_batch = len(data.shape) == 3
+    preds = data[0].copy() if is_batch else data.copy()
+    
+    theo_solar_future = calculate_theoretical_solar_radiation(
+        np.array(future_timestamps), env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
+    )
+    
+    features = ['temp', 'rh', 'pres', 'wind', 'solar', 'rain']
+    for i in range(preds.shape[0]):
+        for j, feat in enumerate(features):
+            # Apply guardrails iteratively for each feature
+            val = preds[i, j]
+            
+            # Special case for solar (clear-sky limit)
+            if feat == 'solar':
+                if theo_solar_future[i] <= 0.0:
+                    preds[i, j] = 0.0
+                else:
+                    val = min(val, theo_solar_future[i])
+                    preds[i, j] = apply_physics_guardrails(val, feature=feat, sensor_specs=sensor_specs)
+            else:
+                preds[i, j] = apply_physics_guardrails(val, feature=feat, sensor_specs=sensor_specs)
+                
+    return np.expand_dims(preds, axis=0) if is_batch else preds

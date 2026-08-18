@@ -2,10 +2,11 @@
 
 """
 @file waid_07_1_inference_forecast.py
-@brief WAID 6-Hour Inference, Strict Physics-Safe Guardrails, and Incremental Consuntivo Pipeline for all 6 Features.
-@details Corrects target feature ordering, handles physical telemetry baseline extraction,
-         reconstructs absolute meteorological values, enforces strict non-negative physical bounds, 
-         and directly updates the permanent inference_forecast table using a windowed reconciliation approach.
+@brief 6-hour meteorological inference engine using centralized physical guardrails 
+       and incremental reconciliation.
+@details Executes model prediction, reconstructs absolute values, and leverages 
+         waid_shared for strict physical bounds and quantization before persisting 
+         to the inference_forecast table.
 @author AF
 @date 2026
 """
@@ -13,14 +14,17 @@
 import os
 import sys
 import sqlite3
+import argparse
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import joblib
-from pathlib import Path
-from datetime import datetime, timedelta
-from loguru import logger
 import tensorflow as tf
+from loguru import logger
 
+# Inject configuration path safely
 sys.path.append(
     str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
 )
@@ -28,14 +32,20 @@ from boot import (
     WaidBoot,
     WError,
     WaidExit,
+    validate_mock_timestamp,
 )
 
 # Import shared utilities from Single Source of Truth
-from waid_utils import calculate_theoretical_solar_radiation, fetch_and_resample_ecowitt, get_station_metadata
+from waid_shared import (
+    calculate_theoretical_solar_radiation, 
+    fetch_and_resample_ecowitt, 
+    get_station_metadata,
+    apply_physics_guardrails,
+)
 
 
 def load_active_model_artifacts(env: WaidBoot):
-    """Loads the active model and scalers from registry or fallback paths."""
+    """Load the active model and scalers from registry or fallback paths."""
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
@@ -71,9 +81,13 @@ def load_active_model_artifacts(env: WaidBoot):
 
 
 def fetch_recent_telemetry(env: WaidBoot) -> pd.DataFrame:
-    """Fetches the last hourly telemetry records using the shared resampling utility."""
+    """Fetch the last hourly telemetry records using the shared resampling utility."""
     try:
-        end_dt = datetime.now()
+        if env.mock_now:
+            end_dt = pd.to_datetime(env.mock_now)
+        else:
+            end_dt = datetime.now()
+            
         start_dt = end_dt - timedelta(days=3)
         
         start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -106,7 +120,7 @@ def fetch_recent_telemetry(env: WaidBoot) -> pd.DataFrame:
 
 
 def add_cyclic_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds sine and cosine encoded temporal features for daily and seasonal cycles."""
+    """Add sine and cosine encoded temporal features for daily and seasonal cycles."""
     ts = pd.to_datetime(df['timestamp'])
     hour = ts.dt.hour + ts.dt.minute / 60.0
     day_of_year = ts.dt.dayofyear
@@ -119,16 +133,15 @@ def add_cyclic_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
-    """Constructs input tensor with cyclic features and theoretical solar radiation."""
+    """Construct input tensor with cyclic features and theoretical solar radiation."""
     df_engineered = add_cyclic_time_features(df_raw.copy())
     timestamps_arr = df_engineered['timestamp'].values
     
-    # Calculate theoretical solar radiation with debug tracking
     theo_solar_vals = calculate_theoretical_solar_radiation(
         timestamps_arr, env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
     )
     logger.debug(
-        f"Physics Guardrail - Forecast Input Tensor - Theoretical Solar Range: "
+        f"Input Tensor - Theoretical Solar Range: "
         f"Min={theo_solar_vals.min():.2f} W/m², Max={theo_solar_vals.max():.2f} W/m²"
     )
     
@@ -141,77 +154,15 @@ def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
     return np.expand_dims(input_data, axis=0)
 
 
-def apply_physics_guardrails(env: WaidBoot, predictions: np.ndarray, future_timestamps: list[str], sensor_specs: dict) -> np.ndarray:
-    """Applies strict physics guardrails, hardware resolution quantization, and noise suppression to absolute predictions."""
-    theo_solar_future = calculate_theoretical_solar_radiation(
-        np.array(future_timestamps), env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
-    )
-    logger.debug(
-        f"Physics Guardrail - Forecast Guardrails - Future Theoretical Solar Range: "
-        f"Min={theo_solar_future.min():.2f} W/m², Max={theo_solar_future.max():.2f} W/m²"
-    )
-    
-    is_batch = len(predictions.shape) == 3
-    preds = predictions[0] if is_batch else predictions
-
-    # Extract specs for each feature with robust default fallbacks
-    temp_spec  = sensor_specs.get('ecowitt_temp',  {'resolution': 0.1,  'deadband': 0.0})
-    rh_spec    = sensor_specs.get('ecowitt_rh',    {'resolution': 1.0,  'deadband': 0.0})
-    pres_spec  = sensor_specs.get('ecowitt_pres',  {'resolution': 0.1,  'deadband': 0.0})
-    wind_spec  = sensor_specs.get('ecowitt_wind',  {'resolution': 0.1,  'deadband': 0.1})
-    solar_spec = sensor_specs.get('ecowitt_solar', {'resolution': 0.13, 'deadband': 0.0})
-    rain_spec  = sensor_specs.get('ecowitt_rain',  {'resolution': 0.2,  'deadband': 0.2})
-    
-    for i, _ in enumerate(future_timestamps):
-        # 1. Temperature: hardware resolution quantization
-        preds[i, 0] = round(preds[i, 0] / temp_spec['resolution']) * temp_spec['resolution']
-
-        # 2. Relative Humidity: bounded percentage [0, 100] + resolution quantization
-        rh_val = np.clip(preds[i, 1], 0.0, 100.0)
-        preds[i, 1] = round(rh_val / rh_spec['resolution']) * rh_spec['resolution']
-
-        # 3. Absolute Pressure: hardware resolution quantization
-        preds[i, 2] = round(preds[i, 2] / pres_spec['resolution']) * pres_spec['resolution']
-
-        # 4. Wind Speed: non-negative + deadband noise suppression
-        wind_val = max(0.0, preds[i, 3])
-        wind_threshold = max(wind_spec.get('deadband', 0.0), wind_spec['resolution'] / 2.0)
-        if wind_val < wind_threshold:
-            preds[i, 3] = 0.0
-        else:
-            preds[i, 3] = round(wind_val / wind_spec['resolution']) * wind_spec['resolution']
-
-        # 5. Solar Radiation: clear-sky theoretical limit + night zeroing
-        if theo_solar_future[i] <= 0.0:
-            preds[i, 4] = 0.0
-        else:
-            solar_val = min(max(0.0, preds[i, 4]), theo_solar_future[i])
-            if solar_val < (solar_spec['resolution'] / 2.0):
-                preds[i, 4] = 0.0
-            else:
-                preds[i, 4] = round(solar_val / solar_spec['resolution']) * solar_spec['resolution']
-
-        # 6. Rainfall: non-negative + tipping-bucket minimum threshold noise suppression
-        rain_val = max(0.0, preds[i, 5])
-        rain_threshold = max(rain_spec.get('deadband', 0.0), rain_spec['resolution'] / 2.0)
-        if rain_val < rain_threshold:
-            preds[i, 5] = 0.0
-        else:
-            preds[i, 5] = round(rain_val / rain_spec['resolution']) * rain_spec['resolution']
-
-    return np.expand_dims(preds, axis=0) if is_batch else preds
-
-
-def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list[str], preds_guarded: np.ndarray):
-    """Directly persists and updates permanent inference_forecast table for all 6 features with sliding window reconciliation."""
+def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list[str], preds_guarded: np.ndarray, sensor_specs: dict):
+    """Directly persist and update permanent inference_forecast table for all 6 features with dynamic pending reconciliation."""
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
             
-            # Ensure base table exists
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS inference_forecast(
-                    timestamp TEXT PRIMARY KEY,
+                    timestamp TEXT,
                     model_version TEXT,
                     pred_temp REAL,
                     pred_rh REAL,
@@ -223,11 +174,11 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                     diff_rh REAL,
                     historical_bias_temp REAL,
                     drift_vs_bias REAL,
-                    created_at TEXT
+                    created_at TEXT,
+                    PRIMARY KEY (timestamp, model_version)
                 )
             """)
 
-            # Safe migration: ensure all feature columns for diffs, historical biases, and drifts exist
             cursor.execute("PRAGMA table_info(inference_forecast)")
             existing_columns = [col[1] for col in cursor.fetchall()]
             
@@ -248,11 +199,13 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
             model_version = "weather_model_full"
             preds = preds_guarded[0] if len(preds_guarded.shape) == 3 else preds_guarded
 
-            # 1. Insert or update new predictions non-destructively for all 6 features
             for i, timestamp in enumerate(future_timestamps):
                 p_temp, p_rh, p_pres, p_wind, p_solar, p_rain = preds[i]
                 
-                cursor.execute("SELECT timestamp FROM inference_forecast WHERE timestamp = ?", (timestamp,))
+                cursor.execute("""
+                    SELECT timestamp FROM inference_forecast 
+                    WHERE timestamp = ? AND model_version = ?
+                """, (timestamp, model_version))
                 row = cursor.fetchone()
                 
                 if not row:
@@ -271,34 +224,64 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                 else:
                     cursor.execute("""
                         UPDATE inference_forecast 
-                        SET model_version = ?, pred_temp = ?, pred_rh = ?, pred_pres = ?, 
+                        SET pred_temp = ?, pred_rh = ?, pred_pres = ?, 
                             pred_wind = ?, pred_rain = ?, pred_solar = ?, created_at = ?
-                        WHERE timestamp = ?
+                        WHERE timestamp = ? AND model_version = ?
                     """, (
-                        model_version, float(p_temp), float(p_rh), float(p_pres),
+                        float(p_temp), float(p_rh), float(p_pres),
                         float(p_wind), float(p_rain), float(p_solar),
-                        created_at, timestamp
+                        created_at, timestamp, model_version
                     ))
 
-            # 2. Windowed Reconciliation & Backfill for all 6 features within configured lookback days
-            cutoff_days = env.reconciliation_cutoff_days
-            reconciliation_cutoff = (datetime.now() - timedelta(days=cutoff_days)).strftime("%Y-%m-%d %H:%M:%S")
-            logger.info(f"Reconciling consuntivo data starting from cutoff: {reconciliation_cutoff} ({cutoff_days} days lookback)")
+            logger.info("Starting dynamic reconciliation for all pending records with missing diffs...")
 
             cursor.execute("""
-                SELECT timestamp, temp_eco, pres_eco, rh_eco, wind_eco, solar_eco, rain_eco 
-                FROM match_records 
-                WHERE timestamp >= ?
-            """, (reconciliation_cutoff,))
-            actual_rows = cursor.fetchall()
+                SELECT timestamp 
+                FROM inference_forecast 
+                WHERE (diff_temp IS NULL OR diff_rh IS NULL OR diff_pres IS NULL 
+                   OR diff_wind IS NULL OR diff_solar IS NULL OR diff_rain IS NULL)
+                  AND model_version = ?
+                ORDER BY timestamp ASC
+            """, (model_version,))
+            pending_rows = cursor.fetchall()
 
-            for row in actual_rows:
-                ts, a_temp, a_pres, a_rh, a_wind, a_solar, a_rain = row
+            for row in pending_rows:
+                ts = row[0]
                 
                 cursor.execute("""
-                    SELECT pred_temp, pred_rh, pred_pres, pred_wind, pred_solar, pred_rain 
-                    FROM inference_forecast WHERE timestamp = ?
+                    SELECT timestamp, temp_eco, pres_eco, rh_eco, wind_eco, solar_eco, rain_eco 
+                    FROM match_records 
+                    WHERE timestamp = ?
                 """, (ts,))
+                actual_row = cursor.fetchone()
+                
+                if not actual_row:
+                    continue
+                
+                _, a_temp, a_pres, a_rh, a_wind, a_solar, a_rain = actual_row
+                
+                if any(v is not None for v in [a_temp, a_rh, a_pres, a_wind, a_solar, a_rain]):
+                    actual_raw_arr = np.array([[
+                        a_temp if a_temp is not None else 0.0,
+                        a_rh if a_rh is not None else 0.0,
+                        a_pres if a_pres is not None else 0.0,
+                        a_wind if a_wind is not None else 0.0,
+                        a_solar if a_solar is not None else 0.0,
+                        a_rain if a_rain is not None else 0.0
+                    ]])
+                    # Utilizing centralized apply_physics_guardrails from waid_shared
+                    actual_guarded = apply_physics_guardrails(
+                        actual_raw_arr, 
+                        future_timestamps=[ts], 
+                        env=env
+                    )[0]
+                    a_temp, a_rh, a_pres, a_wind, a_solar, a_rain = actual_guarded
+                    
+                cursor.execute("""
+                    SELECT pred_temp, pred_rh, pred_pres, pred_wind, pred_solar, pred_rain 
+                    FROM inference_forecast 
+                    WHERE timestamp = ? AND model_version = ?
+                """, (ts, model_version))
                 pred_row = cursor.fetchone()
                 
                 cursor.execute("""
@@ -310,7 +293,6 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                 if pred_row:
                     p_temp, p_rh, p_pres, p_wind, p_solar, p_rain = pred_row
                     
-                    # Extract historical biases safely (default to 0.0 if missing)
                     b_temp  = float(bias_row[0]) if bias_row and bias_row[0] is not None else 0.0
                     b_pres  = float(bias_row[1]) if bias_row and bias_row[1] is not None else 0.0
                     b_rh    = float(bias_row[2]) if bias_row and bias_row[2] is not None else 0.0
@@ -318,7 +300,6 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                     b_solar = float(bias_row[4]) if bias_row and bias_row[4] is not None else 0.0
                     b_rain  = float(bias_row[5]) if bias_row and bias_row[5] is not None else 0.0
 
-                    # Calculate diffs for all 6 features
                     diff_temp  = float(p_temp)  - float(a_temp)  if p_temp  is not None and a_temp  is not None else None
                     diff_rh    = float(p_rh)    - float(a_rh)    if p_rh    is not None and a_rh    is not None else None
                     diff_pres  = float(p_pres)  - float(a_pres)  if p_pres  is not None and a_pres  is not None else None
@@ -326,7 +307,6 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                     diff_solar = float(p_solar) - float(a_solar) if p_solar is not None and a_solar is not None else None
                     diff_rain  = float(p_rain)  - float(a_rain)  if p_rain  is not None and a_rain  is not None else None
 
-                    # Calculate drift vs bias for all 6 features
                     drift_temp  = (diff_temp  - b_temp)  if diff_temp  is not None else None
                     drift_rh    = (diff_rh    - b_rh)    if diff_rh    is not None else None
                     drift_pres  = (diff_pres  - b_pres)  if diff_pres  is not None else None
@@ -334,7 +314,6 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                     drift_solar = (diff_solar - b_solar) if diff_solar is not None else None
                     drift_rain  = (diff_rain  - b_rain)  if diff_rain  is not None else None
 
-                    # Idempotent UPDATE across the sliding reconciliation window
                     cursor.execute("""
                         UPDATE inference_forecast 
                         SET diff_temp = ?, diff_rh = ?, diff_pres = ?, diff_wind = ?, diff_solar = ?, diff_rain = ?,
@@ -343,28 +322,37 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                             drift_vs_bias_temp = ?, drift_vs_bias_rh = ?, drift_vs_bias_pres = ?, 
                             drift_vs_bias_wind = ?, drift_vs_bias_solar = ?, drift_vs_bias_rain = ?,
                             drift_vs_bias = ?
-                        WHERE timestamp = ?
+                        WHERE timestamp = ? AND model_version = ?
                     """, (
                         diff_temp, diff_rh, diff_pres, diff_wind, diff_solar, diff_rain,
                         b_temp, b_rh, b_pres, b_wind, b_solar, b_rain,
                         drift_temp, drift_rh, drift_pres, drift_wind, drift_solar, drift_rain,
-                        drift_temp, # legacy column support
-                        ts
+                        drift_temp,
+                        ts, model_version
                     ))
 
             conn.commit()
-        logger.success("Permanent inference_forecast table successfully updated for all 6 features with incremental predictions and windowed consuntivo reconciliation.")
+        logger.success("Permanent inference_forecast table successfully updated.")
     except sqlite3.Error as e:
         raise WError(f"Failed to update inference forecast table: {e}", code=WaidExit.DATA_FAIL)
 
 
 def main() -> int:
+    """Main entry point for executing the 6-hour weather inference and reconciliation workflow."""
     try:
+        parser = argparse.ArgumentParser(description="WAID Inference Engine")
+        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        args, _ = parser.parse_known_args()
+        
         env = WaidBoot()
+
+        if args.mock_now:
+            env.mock_now = validate_mock_timestamp(args.mock_now)
+            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+        
         logger.info("Initializing 6-hour weather inference and strict physics-safe guardrail pipeline...")
 
-        # Fetch metadata and empirical hardware sensor specs
-        _, station_name, _, _, _, sensor_specs = get_station_metadata(env)
+        _, _, _, _, _, _ = get_station_metadata(env)
 
         model, x_scaler, y_scaler = load_active_model_artifacts(env)
         df_raw = fetch_recent_telemetry(env)
@@ -398,9 +386,6 @@ def main() -> int:
         ]
         last_actual_series = df_raw[TARGET_FEATURES_ORDER].iloc[-1]
         last_actual_features = last_actual_series.values.astype(float)      
-         
-        logger.info(f"Using strict target order for reconstruction: {TARGET_FEATURES_ORDER}")       
-        logger.info(f"Last Actual Telemetry Baseline:\n{last_actual_series.to_dict()}")
 
         preds_absolute = np.zeros_like(preds_deltas)
         if len(preds_deltas.shape) == 3:
@@ -410,14 +395,22 @@ def main() -> int:
             for h in range(preds_deltas.shape[0]):
                 preds_absolute[h, :] = last_actual_features + preds_deltas[h, :]
 
-        last_dt = datetime.fromisoformat(recent_timestamps[-1])
-        last_dt_hourly = last_dt.replace(minute=0, second=0, microsecond=0)
-        future_timestamps = [(last_dt_hourly + timedelta(hours=i+1)).strftime("%Y-%m-%d %H:%M:%S") for i in range(env.forecast_horizon_hours)]
+        if env.mock_now:
+            last_dt = pd.to_datetime(env.mock_now).floor('h')
+        else:
+            last_dt = pd.to_datetime(recent_timestamps[-1]).floor('h')
+            
+        last_dt_hourly = last_dt.floor('h')
         
-        # Apply physics guardrails using dynamic sensor specs from DB
-        preds_guarded = apply_physics_guardrails(env, preds_absolute, future_timestamps, sensor_specs)
-
-        persist_and_update_inference_forecast(env, future_timestamps, preds_guarded)
+        future_timestamps = [(last_dt_hourly + pd.Timedelta(hours=i+1)).strftime("%Y-%m-%d %H:%M:%S") for i in range(env.forecast_horizon_hours)]
+        
+        # Apply physics guardrails using the centralized function from waid_shared
+        preds_guarded = apply_physics_guardrails(
+            preds_absolute, 
+            future_timestamps, 
+            env=env
+        )
+        persist_and_update_inference_forecast(env, future_timestamps, preds_guarded, {})
 
         logger.success("6-hour absolute forecast outputs successfully generated, guarded, and stored.")
         return WaidExit.SUCCESS
@@ -428,7 +421,6 @@ def main() -> int:
     except Exception:
         logger.exception("Unexpected failure during inference execution")
         return WaidExit.INTERNAL_ERROR
-
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -2,11 +2,9 @@
 
 """
 @file waid_scheduler.py
-@brief Continuous background scheduler with automatic initial backfill check.
-@details Operates as the long-running operational service for WAID. It checks
-         for the existence of the core SQLite database upon startup to decide
-         whether an initial historical backfill is required. Once initialized,
-         it continuously executes incremental pipeline runs at configured intervals.
+@brief Continuous background scheduler with automatic initial backfill check and retroactive simulation support.
+@details Operates as the long-running operational service for WAID or runs in retroactive simulation mode 
+         iterating through historical periods step-by-step.
 @author AF
 @date 2026
 """
@@ -15,11 +13,12 @@ import time
 import subprocess
 import sys
 import os
+import argparse
 from pathlib import Path
 from loguru import logger
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Single entry point for configuration and output constants
+# Import WaidBoot configuration and utility classes
 sys.path.append(
     str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
 )
@@ -31,7 +30,8 @@ from boot import (
 
 
 def check_initial_setup_needed(env: WaidBoot) -> bool:
-    """Checks whether historical data or database setup is missing to trigger backfill.
+    """
+    Checks whether historical data or database setup is missing to trigger backfill.
 
     @param env WaidBoot configuration context.
     @return True if the database does not exist or requires initialization, False otherwise.
@@ -43,7 +43,8 @@ def check_initial_setup_needed(env: WaidBoot) -> bool:
 
 
 def run_pipeline(mode: str, extra_args: list = None) -> int:
-    """Executes the WAID orchestration pipeline script with specific modes and arguments.
+    """
+    Executes the WAID orchestration pipeline script with specific modes and arguments.
 
     @param mode Pipeline execution mode (e.g., 'backfill', 'incremental').
     @param extra_args Optional list of additional command-line arguments.
@@ -53,28 +54,88 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     
     if extra_args is None:
         extra_args = []
-        
-    # Dynamically pass the current month for incremental runs if not specified
+
+    mock_now = os.environ.get("WAID_MOCK_NOW")
     if mode == "incremental" and "--period" not in extra_args:
-        current_month = datetime.now().strftime("%Y-%m")
+        if mock_now:
+            current_month = mock_now[:7]
+        else:
+            current_month = datetime.now().strftime("%Y-%m")
         extra_args.extend(["--period", current_month])
         
     if extra_args:
         cmd.extend(extra_args)
-    
-    result = subprocess.run(cmd, check=False)
+
+    # Propagate the simulation timestamp environment variable to the subprocess
+    env_vars = os.environ.copy()
+    if mock_now:
+        env_vars["WAID_MOCK_NOW"] = mock_now
+
+    result = subprocess.run(cmd, env=env_vars, check=False)
     return result.returncode
 
 
 def main() -> int:
-    """Main execution entry point for the continuous operational scheduler.
+    """
+    Main execution entry point for the continuous operational scheduler or retroactive simulator.
 
-    @return Execution exit code integer.
+    @return int Execution exit code integer.
     """
     try:
-        env = WaidBoot()
-        logger.info("WAID Continuous Operational Scheduler started.")
+        # CLI Argument Parsing for Retroactive Mode
+        parser = argparse.ArgumentParser(description="WAID Operational Scheduler & Retroactive Simulator")
+        parser.add_argument("--retroactive", action="store_true", help="Enable retroactive simulation mode")
         
+        # Support both new and legacy argument naming conventions
+        parser.add_argument("--mock-begin", "--begin-period", dest="mock_begin", type=str, help="Start timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)")
+        parser.add_argument("--mock-end", "--end-period", dest="mock_end", type=str, help="End timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)")
+        args = parser.parse_args()
+
+        env = WaidBoot()
+
+        # --- RETROACTIVE MODE ---
+        if args.retroactive:
+            if not args.mock_begin or not args.mock_end:
+                logger.error("Both start (--mock-begin / --begin-period) and end (--mock-end / --end-period) timestamps are required in --retroactive mode.")
+                return WaidExit.CONFIG_FAIL
+
+            begin_dt = datetime.strptime(args.mock_begin, "%Y-%m-%d %H:%M:%S")
+            end_dt = datetime.strptime(args.mock_end, "%Y-%m-%d %H:%M:%S")
+            current_dt = begin_dt
+
+            logger.info(f"WAID Retroactive Simulation started from {begin_dt} to {end_dt}")
+            
+            # Initial setup execution
+            extra_passthrough = ["--only-setup"]
+            code = run_pipeline("incremental", extra_args=extra_passthrough)
+            if code != 0:
+                logger.error(f"Pipeline failed at DBT setup step with exit code {code}")
+
+            try:
+                while current_dt <= end_dt:
+                    mock_now_str = current_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    os.environ["WAID_MOCK_NOW"] = mock_now_str
+                    
+                    logger.info(f"=== [RETROACTIVE STEP] Processing timestamp: {mock_now_str} ===")
+                    
+                    # Pass simulation flags to the orchestrator
+                    extra_passthrough = ["--skip-ingestion", "--mock-now", mock_now_str]
+                    code = run_pipeline("incremental", extra_args=extra_passthrough)
+                    
+                    if code != 0:
+                        logger.error(f"Pipeline failed at retroactive step {mock_now_str} with exit code {code}")
+                    
+                    # Advance by the configured interval
+                    current_dt += timedelta(hours=env.mock_interval_hours)
+            finally:
+                # Cleanup environment variables after simulation completion
+                os.environ.pop("WAID_MOCK_NOW", None)
+                logger.info("WAID Retroactive Simulation completed and environment cleaned up.")
+
+            return WaidExit.SUCCESS
+
+        # --- STANDARD / CONTINUOUS OPERATIONAL MODE ---
+        logger.info("WAID Continuous Operational Scheduler started.")
         interval_sec = env.scheduled_interval_sec
 
         # 1. Handle Initial Setup / Backfill on first boot

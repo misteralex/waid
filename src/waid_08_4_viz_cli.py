@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_08_1_viz_cli.py
+@file waid_08_4_viz_cli.py
 @brief CLI visualizer for WAID operational forecasts including ERA5 ground truth comparison from inference_quality.
 @author AF
 @date 2026

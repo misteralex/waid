@@ -1,12 +1,10 @@
-# Pipeline Usage
+# WAID (Weather AI Direct Nowcasting) Pipeline Usage
 
 ## Stage 01 — Ingestion & Profiling
 
 ### `waid_01_1_ingest_ecowitt.py`
 
 Ingests hourly Ecowitt weather-station observations. To execute the Ecowitt telemetry ingestion script manually with your local station parameters, run the following command  from the repository root:
-
-**Usage:**
 
 ```bash
 python src/waid_01_1_ingest_ecowitt.py --ip 192.168.1.100 --period 2026-08
@@ -16,20 +14,16 @@ python src/waid_01_1_ingest_ecowitt.py --ip 192.168.1.100 --period 2026-08
 
 To execute the ERA5 atmospheric reanalysis download script manually with custom coordinates (e.g., Rome) and a specific target period, run the following command from the repository root:
 
-**Usage:**
-
 ```bash
 python src/waid_01_2_ingest_era5.py --period 2026-08 --lat 41.9028 --lon 12.4964 --elevation 6
 ```
 
-### `waid_02_2_profile_era5.py`
+### `waid_01_3_profile_era5.py`
 
 To execute the ERA5 data profiling and catalog validation script for a specific target period, run the following command from the repository root:
 
-**Usage:**
-
 ```bash
-python src/waid_02_2_profile_era5.py --period 2026-08
+python src/waid_01_3_profile_era5.py --period 2026-08
 ```
 
 ## Stage 02: Synchronization & Staging
@@ -37,8 +31,6 @@ python src/waid_02_2_profile_era5.py --period 2026-08
 ### `waid_02_1_sync_ecowitt.py`
 
 To execute the Ecowitt synchronization script and import local station CSV data into the SQLite database with automatic UTC conversion, run the following command from the repository root:
-
-**Usage:**
 
 ```bash
 python src/waid_02_1_sync_ecowitt.py --period 2026-08
@@ -50,20 +42,8 @@ python src/waid_02_1_sync_ecowitt.py --period 2026-08
 
 To execute the dataset matching and feature store alignment script for a specific target period, run the following command from the repository root:
 
-**Usage:**
-
 ```bash
 python src/waid_03_1_match_datasets.py --period 2026-08
-```
-
-### `waid_analyze_bias.py`
-
-This script is provided as a debugging and diagnostic utility within the WAID pipeline. It can be used to inspect bias-related results and perform sanity checks for a specific target period. To run the analysis, execute the following command from the repository root:
-
-**Usage:**
-
-```bash
-python src/waid_analyze_bias.py --period 2026-08
 ```
 
 ## Stage 04: Station Specs & Setup
@@ -71,8 +51,6 @@ python src/waid_analyze_bias.py --period 2026-08
 ### `waid_04_1_setup_specs.py`
 
 To execute the hardware sensor specifications setup and profiling script, run the following command from the repository root:
-
-**Usage:**
 
 ```bash
 python src/waid_04_1_setup_specs.py
@@ -84,8 +62,6 @@ python src/waid_04_1_setup_specs.py
 
 To execute the 3D training tensor generation script (extracting features and temporal embeddings from local telemetry) for a specific target period, run the following command from the repository root:
 
-**Usage:**
-
 ```bash
 python src/waid_05_1_ml_tensors.py --period 2026-08
 ```
@@ -94,20 +70,15 @@ python src/waid_05_1_ml_tensors.py --period 2026-08
 
 To execute the machine learning model training pipeline (including incremental scaling, tensor enrichment, and model registry synchronization), run the following command from the repository root:
 
-**Usage:**
-
 ```bash
 python src/waid_05_2_ml_train.py
 ```
 
 ## Stage 06: Inference & Quality Assessment
 
-
 ### `waid_06_1_inference_engine.py`
 
 To execute the WAID inference engine, which loads the trained LSTM model to perform multi-step forecasting and stores the results in the database, run the following command from the repository root:
-
-**Usage:**
 
 ```bash
 python src/waid_06_1_inference_engine.py
@@ -116,8 +87,6 @@ python src/waid_06_1_inference_engine.py
 ### `waid_06_5_inference_quality.py`
 
 To execute the quality assurance script and validate the presence and integrity of inference records within the SQLite database, run the following command from the repository root:
-
-**Usage:**
 
 ```bash
 python src/waid_06_5_inference_quality.py
@@ -129,8 +98,6 @@ python src/waid_06_5_inference_quality.py
 
 To execute the 6-hour weather inference pipeline (which reconstructs absolute meteorological values, enforces strict physics-safe guardrails, and updates the `inference_forecast` table with incremental consuntivo data), run the following command from the repository root:
 
-**Usage:**
-
 ```bash
 python src/waid_07_1_inference_forecast.py
 ```
@@ -139,42 +106,55 @@ python src/waid_07_1_inference_forecast.py
 
 To execute the ETL script that extracts operational forecasts and quality metrics from the internal lab database and deploys them to the public SQLite database (`WAID_DB_DEPLOY_FILE`), run the following command from the repository root:
 
-**Usage:**
-
 ```bash
 python src/waid_07_2_export_deploy_db.py
 ```
 <br>
 
-## Stage 08: Visualization
+## Stage 08: Data Product & Visualization
 
 <br>
 
-### `waid_08_1_viz_cli.py`
+### `waid_08_1_viz_streamlit_update.py`
 
-To execute the CLI visualizer for operational forecasts (including ERA5 ground truth comparisons and drift metrics), run the following command from the repository root:
-
-**Usage:**
+To execute the final synchronization and deployment script (with safety controls via WAID_ENV to handle git push only in production),  run the following command from the repository root:
 
 ```bash
-python src/waid_08_1_viz_cli.py
+python src/waid_08_1_viz_streamlit_update.py
 ```
 
 <br>
 
-### `waid_08_2_viz_streamlit.py`
-
-**Usage:**
+### `waid_08_2_viz_streamlit_app.py`
 
 To launch the Streamlit public analytics dashboard, which provides dedicated visualizations for all six weather features and allows for three-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics, run the following command from the repository root to launch the interactive Streamlit analytics dashboard:
 
 ```bash
-streamlit run src/waid_08_2_viz_streamlit.py
+streamlit run src/waid_08_2_viz_streamlit_app.py
 ```
 
 To package the application and database for external deployment:
 ```bash
-streamlit run src/waid_08_2_viz_streamlit.py --deploy
+streamlit run src/waid_08_2_viz_streamlit_app.py --deploy
+```
+<br>
+
+### `waid_08_3_doc_dbt_deploy.py`
+
+To generate and deploy the automated Markdown data dictionary for dbt models within the Stage 08 pipeline, run the following command from the repository root:
+
+```bash
+python src/waid_08_3_doc_dbt_deploy.py
+```
+
+<br>
+
+### `waid_08_4_viz_cli.py`
+
+To execute the CLI visualizer for operational forecasts (including ERA5 ground truth comparisons and drift metrics), run the following command from the repository root:
+
+```bash
+python src/waid_08_4_viz_cli.py
 ```
 
 ## dbt Commands
@@ -277,6 +257,7 @@ Run the `inference_quality` model together with its upstream dependencies:
 dbt run --select +inference_quality --target dev \
   --vars '{"max_bias_temp": 3.0, "max_bias_pres": 15.0, "max_bias_rh": 30.0, "max_bias_wind": 2.0, "max_bias_solar": 50.0, "max_bias_rain": 2.0}'
 ```
+---
 
 ## Additional Tools
 
@@ -287,7 +268,114 @@ The following components provide supporting services for the WAID pipeline, incl
 | **`waid_scheduler.py`** | **Continuous operational scheduler.** Checks the environment at startup and automatically triggers a historical backfill when the WAID database (`waid.db`) is not yet available. Once initialized, it periodically launches the pipeline in incremental mode through `waid_orchestrate.py`, passing the current period in `YYYY-MM` format. |
 | **`waid_orchestrate.py`** | **Core pipeline orchestrator.** Coordinates the end-to-end WAID workflow, from dbt initialization and data ingestion, profiling, and alignment through Machine Learning training and inference. Supports incremental and backfill modes, reset operations, and propagation of the `--period` parameter across pipeline stages. |
 | **`boot.py`** | **Bootstrap and configuration manager.** Loads and validates application and environment settings, configures logging through `loguru`, and validates required storage paths, SQLite databases, Ecowitt/ERA5 data directories, dbt resources, and Machine Learning tensor directories through the `WaidBoot` interface. |
-| **`waid_utilis.py`** | **Shared utility library.** Provides common functions for astronomical clear-sky solar radiation calculations, extraction and cleaning of Ecowitt telemetry, resampling and bounded interpolation, and retrieval of station metadata and sensor specifications from the SQLite Feature Store. |
+| **`waid_shared.py`** | **Shared utility library.** Provides common functions for astronomical clear-sky solar radiation calculations, extraction and cleaning of Ecowitt telemetry, resampling and bounded interpolation, and retrieval of station metadata and sensor specifications from the SQLite Feature Store. |
+| **`waid_analyze_bias.py`** | **Debugging and diagnostic utility.** Provided as a debugging and diagnostic utility within the WAID pipeline. It can be used to inspect bias-related results and perform sanity checks for a specific target period
+
+---
+
+## WAID Pipeline Orchestrator
+
+The `waid_orchestrate.py` script is the central execution engine of the WAID project. It coordinates the end-to-end execution lifecycle, including environment setup, dbt project building, data ingestion, backfilling, incremental updates, and machine learning training/inference workflows.  
+
+### Usage & Command-Line Arguments
+
+The script supports various flags to control the execution scope, allowing for granular debugging and rapid iteration.
+
+```bash
+python waid_orchestrate.py [OPTIONS]
+```
+
+### Options Summary
+
+| Flag | Description |
+| :--- | :--- |
+| --run-mode | Set to 'incremental' (default) or 'backfill' (for multi-period historical processing). |
+| --skip-setup | Skips dbt setup steps (00_1 to 00_4) to save time during iteration. |
+| --skip-ingestion | Skips raw data ingestion and mock update steps. |
+| --only-setup | Runs only the dbt setup steps (00_1 to 00_4) and exit. |
+| --start-from | Fast-forwards execution directly to a specific step function name. |
+| --period | Specifies the target period (YYYY-MM) for the run. |
+| --begin-period / --end-period | Defines the start and end date range for backfill mode. |
+| --mock-now | Injects a simulated timestamp (YYYY-MM-DD HH:MM:SS) for retroactive execution. |
+
+---
+
+### Practical Examples
+
+#### 1. Rapid Iteration (Skip Setup and Ingestion)
+If you are iterating on the ML model or inference scripts and the dbt/data environment is already prepared, you can bypass the overhead of setup and ingestion:
+
+```bash
+python waid_orchestrate.py --skip-setup --skip-ingestion
+```
+
+#### 2. Standard Incremental Run
+Executes the full pipeline for the current default period:
+```bash
+python waid_orchestrate.py --run-mode incremental
+```
+
+#### 3. Historical Backfill
+Processes data preparation for a specific date range, followed by a final global Machine Learning & Inference cycle:
+```bash
+python waid_orchestrate.py --run-mode backfill --begin-period 2026-01 --end-period 2026-03
+```
+
+#### 4. Targeted Debugging
+If a specific step in the ML sequence fails, you can skip to that step without re-running the entire data preparation pipeline:
+```bash
+python waid_orchestrate.py --start-from waid_06_1_inference_engine
+```
+
+#### 5. Simulation with Mock Time
+Useful for testing how the system performs using historical timestamps:
+```bash
+python waid_orchestrate.py --mock-now "2026-02-15 12:00:00"
+```
+
+---
+
+## WAID Scheduler Usage
+
+The `waid_scheduler.py` script manages both live continuous execution and historical backfill/simulation tasks.
+
+### Usage Commands
+
+#### 1. Continuous Operational Mode (Default)
+Starts the background service. It checks if the database is initialized (running a backfill if needed) and then enters an infinite loop.
+```bash
+python waid_scheduler.py
+```
+
+#### 2. Retroactive Simulation Mode
+Processes historical data for a specific time window. This bypasses the infinite loop and processes step-by-step using the provided timestamps.
+```bash
+python waid_scheduler.py --retroactive \
+    --mock-begin "2026-01-01 00:00:00" \
+    --mock-end "2026-01-31 23:59:59"
+```
+
+### Options Summary
+| Flag | Description |
+| :--- | :--- |
+| `--retroactive` | Enables batch mode to iterate through a historical timeframe. |
+| `--mock-begin` / `--begin-period` | Start timestamp for simulation (YYYY-MM-DD HH:MM:SS). |
+| `--mock-end` / `--end-period` | End timestamp for simulation (YYYY-MM-DD HH:MM:SS). |
+
+---
+
+## Environment Configuration
+The orchestrator reads the WAID_SETUP_MODE environment variable to manage data state resets:
+
+* Mode 0 (Regime): Standard incremental execution; no state is purged.
+* Mode 1 (Soft Reset): Preserves raw data while resetting database and machine learning artifacts with an automatic backup.
+* Mode 2 (Hard Reset): Purges all data in the directory and creates a full zip archive backup before execution.
+
+Example:
+```bash
+export WAID_SETUP_MODE=1 && python waid_orchestrate.py --skip-setup
+```
+
 
 ## dbt Models
 

@@ -30,7 +30,8 @@ from boot import (
 
 
 def check_era5_data(env: WaidBoot, args: argparse.Namespace) -> int:
-    """Performs metadata extraction and data profiling on a target NetCDF file.
+    """
+    Performs metadata extraction and data profiling on a target NetCDF file.
 
     @param env WaidBoot configuration instance.
     @param args Validated command-line arguments.
@@ -110,7 +111,9 @@ def check_era5_data(env: WaidBoot, args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    """Main execution entry point for ERA5 profiling."""
+    """
+    Main execution entry point for ERA5 profiling.
+    """
     try:
         env = WaidBoot()
 

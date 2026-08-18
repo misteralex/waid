@@ -1,21 +1,21 @@
 version: 2
-
-# @file int_matches_bias.yml
-# @author AF
-# @date 2026
-
 models:
   - name: int_matches_bias
-    description: "Calculated operational bias between Ecowitt telemetry and ERA5 baseline."
+    description: Calculated operational bias between Ecowitt telemetry and ERA5 baseline.
     columns:
       - name: timestamp
-        description: "Hourly ISO timestamp (UTC)"
+        description: Hourly ISO timestamp (UTC)
         tests:
           - unique
           - not_null
 
+        data_type: TEXT
+      - name: ecowitt_temp
+        data_type: UNKNOWN
+      - name: era5_temp
+        data_type: UNKNOWN
       - name: bias_temp
-        description: "Temperature bias (Ecowitt - ERA5) in °C"
+        description: Temperature bias (Ecowitt - ERA5) in °C
         tests:
           - dbt_utils.accepted_range:
               config:
@@ -24,8 +24,13 @@ models:
                 min_value: -15.0
                 max_value: 15.0
 
+        data_type: UNKNOWN
+      - name: ecowitt_pres
+        data_type: UNKNOWN
+      - name: era5_pres
+        data_type: UNKNOWN
       - name: bias_pres
-        description: "Pressure bias (Ecowitt - ERA5) in hPa"
+        description: Pressure bias (Ecowitt - ERA5) in hPa
         tests:
           - dbt_utils.accepted_range:
               config:
@@ -33,3 +38,30 @@ models:
               arguments:
                 min_value: -30.0
                 max_value: 30.0
+        data_type: UNKNOWN
+      - name: ecowitt_rh
+        data_type: UNKNOWN
+      - name: era5_rh
+        data_type: UNKNOWN
+      - name: bias_rh
+        data_type: UNKNOWN
+      - name: ecowitt_wind
+        data_type: UNKNOWN
+      - name: era5_wind
+        data_type: UNKNOWN
+      - name: bias_wind
+        data_type: UNKNOWN
+      - name: ecowitt_solar
+        data_type: UNKNOWN
+      - name: era5_solar
+        data_type: UNKNOWN
+      - name: bias_solar
+        data_type: UNKNOWN
+      - name: ecowitt_rain
+        data_type: UNKNOWN
+      - name: era5_rain
+        data_type: UNKNOWN
+      - name: bias_rain
+        data_type: UNKNOWN
+      - name: bias_overflow_flag
+        data_type: UNKNOWN

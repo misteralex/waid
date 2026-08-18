@@ -4,12 +4,15 @@
 ) }}
 
 /**
- * @file inference_aggregates.sql
+ * @file inference_stats.sql
  * @brief dbt model to compute statistical metrics across model inference records.
  * @details Aggregates temperature, pressure, humidity, wind, solar, and rain forecasts grouped by model version and tag.
  * @author AF
  * @date 2026
  */
+
+-- Definizione della variabile dallo standard d'ambiente
+{% set mock_now = env_var('WAID_MOCK_NOW', '') %}
 
 SELECT
     model_version,
@@ -40,4 +43,8 @@ SELECT
     SQRT(AVG(hourly_rain_mm * hourly_rain_mm) - AVG(hourly_rain_mm) * AVG(hourly_rain_mm)) AS std_rain
 
 FROM {{ source('external_raw', 'inference_records') }}
+WHERE 1=1
+{% if mock_now is not none %}
+  AND timestamp <= '{{ mock_now }}'
+{% endif %}
 GROUP BY model_version, model_version_tag

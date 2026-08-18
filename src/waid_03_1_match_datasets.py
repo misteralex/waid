@@ -33,7 +33,7 @@ from boot import (
     validate_period,
 )
 
-from waid_utils import fetch_and_resample_ecowitt
+from waid_shared import fetch_and_resample_ecowitt
 
 
 def ensure_table_exists(env: WaidBoot) -> bool:

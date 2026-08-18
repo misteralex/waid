@@ -29,12 +29,12 @@ if /I "%COMMAND%"=="scheduler" (
 )
 if /I "%COMMAND%"=="dashboard" (
     echo Starting dashboard locally...
-    streamlit run src/waid_08_2_viz_streamlit.py
+    streamlit run src/waid_08_2_viz_streamlit_app.py
     goto end
 )
 if /I "%COMMAND%"=="local-dashboard" (
     echo Starting dashboard locally...
-    streamlit run src/waid_08_2_viz_streamlit.py
+    streamlit run src/waid_08_2_viz_streamlit_app.py
     goto end
 )
 if /I "%COMMAND%"=="docker-pipeline" (

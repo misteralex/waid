@@ -65,7 +65,6 @@ coverage.xml
 *.log
 logs/
 *.sqlite
-*.db
 data/tmp/
 data/cache/
 .cache/
@@ -76,7 +75,6 @@ data/cache/
 
 # Data & Logs
 data/
-logs/
 dbt/target/
 dbt/logs/
 dbt/dbt_packages/
@@ -84,8 +82,12 @@ dbt/dbt_packages/
 # Ignores all .env files in config...
 config/*.env
 
-# ...except the .example versions!
-!config/*.env.example
+# Database files ignore rule with deployment exception
+*.db
+!deploy/data/
+!deploy/data/waid_deploy.db
 
 backup/
 dbt/.user.yml
+config/.user.yml
+docs/.dbt_models.hash

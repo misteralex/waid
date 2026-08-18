@@ -13,17 +13,37 @@ import sqlite3
 import pandas as pd
 from pathlib import Path
 from loguru import logger
+import argparse
 
 # Inject configuration path safely
 sys.path.append(
     str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
 )
-from boot import WaidBoot, WaidExit
+from boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+    validate_mock_timestamp,
+)
 
 def main() -> int:
-    """Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE."""
+    """
+    Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE.
+    
+    Returns:
+        int: Process exit status code.
+    """
     try:
+        parser = argparse.ArgumentParser(description="WAID Inference Engine")
+        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        args, _ = parser.parse_known_args()
+        
         env = WaidBoot()
+        
+        if args.mock_now:
+            env.mock_now = validate_mock_timestamp(args.mock_now)
+            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+            
         waid_db_dir = Path(env.waid_db)
         
         # Resolve public db path with strict check
@@ -41,6 +61,7 @@ def main() -> int:
 
     logger.info(f"Connecting to lab database: {waid_db_dir}")
     
+    # Updated the query to correctly handle the composite key (timestamp, model_version)
     query = """
         SELECT 
             t.timestamp, 
@@ -56,7 +77,7 @@ def main() -> int:
             q.abs_error_temp, q.abs_error_rh, q.abs_error_pres, q.abs_error_wind, q.abs_error_rain, q.abs_error_solar
         FROM inference_forecast t
         LEFT JOIN inference_quality q ON t.timestamp = q.timestamp
-        ORDER BY t.timestamp ASC
+        ORDER BY t.timestamp ASC, t.model_version ASC
     """
 
     try:
@@ -77,12 +98,18 @@ def main() -> int:
     try:
         with sqlite3.connect(public_db_path) as dest_conn:
             df.to_sql("public_forecasts", dest_conn, if_exists="replace", index=False)
+            
+            # Create an index on the exported table to reflect the composite key and optimize public queries
+            cursor = dest_conn.cursor()
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_public_forecasts_ts_model ON public_forecasts (timestamp, model_version)")
+            dest_conn.commit()
+
         logger.success(f"Public database successfully updated at: {public_db_path}")
     except Exception as e:
         logger.error(f"Failed to write to public database: {e}")
         return WaidExit.DATA_FAIL
 
-    return 0
+    return WaidExit.SUCCESS
 
 if __name__ == "__main__":
     sys.exit(main())

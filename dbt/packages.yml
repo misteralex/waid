@@ -1,3 +1,13 @@
+# ==============================================================================
+# @file packages.yml
+# @brief dBT package declaration specification file.
+# @details Configures external dBT package dependencies (dbt-utils) pinned to 
+#          version release 1.3.0 for standard transformation macros.
+# @author AF
+# @date 2026
+# ==============================================================================
+
 packages:
-  - package: dbt-labs/dbt_utils
-    version: 1.3.0  # O la versione più recente compatibile
+  - git: "git@github.com:dbt-labs/dbt-utils.git"
+    revision: 1.3.0
+    warn-unpinned: false

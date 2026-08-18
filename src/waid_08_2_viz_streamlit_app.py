@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_08_2_viz_streamlit.py
+@file waid_08_2_viz_streamlit_app.py
 @brief Streamlit public analytics dashboard featuring dedicated tabs for all 6 weather features and 3-way comparisons,
        integrated with automated deployment packaging and standard error handling.
 @author AF
@@ -26,7 +26,11 @@ sys.path.append(
 from boot import WaidBoot, WError, WaidExit
 
 def get_deployment_status() -> str:
-    """Verifica se il deploy esiste ed è aggiornato rispetto al sorgente."""
+    """
+    @brief Checks whether the deployment directory exists and is up to date relative to the source script.
+    
+    @return Deployment status identifier ("MISSING", "OUTDATED", "SYNCED", or "UNKNOWN").
+    """
     try:
         env = WaidBoot()
         deploy_app = Path(env.deploy_dir) / "app.py"
@@ -43,48 +47,68 @@ def get_deployment_status() -> str:
         return "UNKNOWN"
 
 def run_deployment_setup(env: WaidBoot) -> None:
-    """Genera o aggiorna la cartella di deploy (Root-based)."""
+    """
+    @brief Generates or updates the target deployment directory and assets.
+    
+    @param env WaidBoot configuration instance.
+    """
     deploy_dir = Path(env.deploy_dir)
     src_script = Path(__file__).resolve()
     db_source = Path(env.waid_data_dir) / env.waid_db_deploy_file
     
-    logger.info(f"Inizializzazione pacchetto deploy in: {deploy_dir}")
+    logger.info(f"Initializing deployment package at: {deploy_dir}")
     deploy_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Scrittura requirements.txt
-    req_content = """streamlit>=1.30.0
-plotly>=5.0.0
-python-dotenv>=1.0.0
-loguru>=0.7.0
-pandas>=2.0.0
-numpy>=1.24.0
-"""
+    # 1. Write requirements.txt
+    req_content = (
+        "streamlit>=1.30.0\n"
+        "plotly>=5.0.0\n"
+        "python-dotenv>=1.0.0\n"
+        "loguru>=0.7.0\n"
+        "pandas>=2.0.0\n"
+        "numpy>=1.24.0\n"
+    )
     with open(deploy_dir / "requirements.txt", "w", encoding="utf-8") as f:
         f.write(req_content)
 
-    # 2. Copia script come app.py
-    shutil.copy(src_script, deploy_dir / "app.py")
+    # 2. Generate app.py by updating the @file header
+    content = src_script.read_text(encoding="utf-8")
+    updated_content = content.replace(
+        "@file waid_08_2_viz_streamlit_app.py", 
+        "@file app.py"
+    )
+    (deploy_dir / "app.py").write_text(updated_content, encoding="utf-8")
 
-    # 3. Copia Database nella root del deploy
+    # 3. Copy database file to deployment root directory
     if db_source.exists():
+        (deploy_dir / "data").mkdir(parents=True, exist_ok=True)
         shutil.copy(db_source, deploy_dir / "data" / "waid_deploy.db")
-        logger.success(f"Database copiato in: {deploy_dir / 'waid_deploy.db'}")
+        logger.success(f"Database successfully copied to: {deploy_dir / 'data' / 'waid_deploy.db'}")
     else:
-        logger.warning(f"Database non trovato in {db_source}")
+        logger.warning(f"Source database not found at {db_source}")
 
-    logger.success("Deployment pacchettizzato con successo!")
+    logger.success("Deployment package successfully created!")
 
 @st.cache_data(ttl=300)
 def load_public_data() -> pd.DataFrame:
-    """Caricamento dati dal percorso deploy locale o fallback."""
-    local_deploy_db = Path("waid_deploy.db")
+    """
+    @brief Loads public analytics data with fallback strategy for Streamlit Cloud.
+    """
+    # 1. Path per Streamlit Cloud / ambiente di deploy
+    base_dir = Path(__file__).resolve().parent
+    cloud_deploy_db = base_dir / "data" / "waid_deploy.db" if base_dir.name == "deploy" else base_dir / "deploy" / "data" / "waid_deploy.db"
     
-    if local_deploy_db.exists():
+    # 2. Path relativo locale
+    local_deploy_db = Path("deploy/data/waid_deploy.db")
+    
+    if cloud_deploy_db.exists():
+        db_path = cloud_deploy_db
+    elif local_deploy_db.exists():
         db_path = local_deploy_db
     else:
         try:
             env = WaidBoot()
-            db_path = Path(env.waid_data_dir) / env.waid_db_deploy_file
+            db_path = Path(env.deploy_dir) / "data" / env.waid_db_deploy_file
         except Exception:
             return pd.DataFrame()
     
@@ -118,32 +142,49 @@ def load_public_data() -> pd.DataFrame:
         return pd.DataFrame()
 
 def run_dashboard() -> None:
-    """Esegue la logica della Streamlit Dashboard."""
+    """
+    @brief Executes the Streamlit interactive visualization dashboard logic.
+    """
     st.set_page_config(page_title="WAID Public Analytics", layout="wide")
     
     if not Path("/mount").exists() and os.environ.get("STREAMLIT_SERVER_PORT") is None:
         status = get_deployment_status()
         if status == "OUTDATED":
-            st.warning("⚠️ **Deploy Outdated**: Esegui `python waid_08_2_viz_streamlit.py --deploy`")
+            st.warning("**Deploy Outdated**: Run `python waid_08_2_viz_streamlit_app.py --deploy`")
         elif status == "MISSING":
-            st.info("ℹ️ **Deploy**: Cartella non inizializzata.")
+            st.info("**Deploy**: Deployment folder not initialized.")
 
-    st.title("🌤️ WAID — Public Operational & Quality Monitor")
+    st.title("WAID — Public Operational & Quality Monitor")
     
     df = load_public_data()
     if df.empty:
-        st.warning("⚠️ Public analytics database (`waid_deploy.db`) not found or empty.")
+        st.warning("Public analytics database (`waid_deploy.db`) not found or empty.")
         return
+    
+    # Robust timestamp parsing with explicit UTC conversion and naive stripping for correct chart alignment
+    df['ts_target'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    if df['ts_target'].dt.tz is not None:
+        df['ts_target'] = df['ts_target'].dt.tz_convert(None)
+    
+    # Time shift to align database UTC timestamps with local sensor time
+    df['ts_target'] = df['ts_target'] + pd.Timedelta(hours=2)
 
-    df['ts_target'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
-    if df['ts_target'].isna().all():
-        df['ts_target'] = pd.to_datetime(df['timestamp'], errors='coerce')
-
-    feature_keys = ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']
-    for k in feature_keys:
+    for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
         if f'pred_{k}' in df.columns and f'diff_{k}' in df.columns:
-            df[f'ecowitt_{k}'] = df[f'pred_{k}'] - df[f'diff_{k}']
+            # Reconstruct Actual = Pred - Diff
+            raw_actual = df[f'pred_{k}'] - df[f'diff_{k}']
+            
+            if k in ['wind', 'rain', 'solar']:
+                # Zero-bounded features (>= 0.0)
+                df[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0)
+            elif k == 'rh':
+                # Relative Humidity bounded strictly between 0% and 100%
+                df[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0, upper=100.0)
+            else:
+                # Temperature and Pressure (no hard zero boundary)
+                df[f'ecowitt_{k}'] = raw_actual
 
+    # UI Filtering
     df['date_str'] = df['ts_target'].dt.strftime('%Y-%m-%d')
     available_dates = sorted(df['date_str'].dropna().unique().tolist(), reverse=True)
     
@@ -157,7 +198,7 @@ def run_dashboard() -> None:
     st.sidebar.header("Configuration")
     selected_date = st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
     
-    st.sidebar.info("💡 **ERA5 Latency Note**: ERA5 reanalysis data typically has a ~7 day publication delay. Select older past dates to inspect ERA5 ground truth metrics.")
+    st.sidebar.info("**ERA5 Latency Note**: ERA5 reanalysis data typically has a ~7 day publication delay. Select older past dates to inspect ERA5 ground truth metrics.")
 
     df_day = df[df['date_str'] == selected_date].copy()
     if df_day.empty:
@@ -221,17 +262,18 @@ def run_dashboard() -> None:
             st.plotly_chart(fig3, use_container_width=True)
 
     st.markdown("---")
-    with st.expander("📋 View Raw Database Records & Metrics"):
+    with st.expander("View Raw Database Records & Metrics"):
         st.dataframe(df_day, use_container_width=True)
 
 def main() -> int:
-    """Main execution entry point for Streamlit dashboard and deploy packaging.
+    """
+    @brief Main execution entry point for Streamlit dashboard and deploy packaging.
 
     @return Process exit status code.
     """
     try:
         parser = argparse.ArgumentParser(description="WAID Streamlit Dashboard & Deploy Packager")
-        parser.add_argument("--deploy", action="store_true", help="Esegue il setup e l'aggiornamento della cartella di deploy")
+        parser.add_argument("--deploy", action="store_true", help="Executes setup and update of the deployment folder")
         args = parser.parse_args()
 
         env = WaidBoot()

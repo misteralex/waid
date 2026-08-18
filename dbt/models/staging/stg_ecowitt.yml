@@ -1,21 +1,14 @@
 version: 2
 
-# @file stg_ecowitt.yml
-# @author AF
-# @date 2026
-
 models:
   - name: stg_ecowitt
-    description: "Staged and cleaned Ecowitt weather station data model"
     columns:
       - name: timestamp
-        description: "Primary timestamp for the weather record"
         tests:
           - not_null
           - unique
 
       - name: temperature
-        description: "Outdoor temperature in degrees Celsius"
         tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -23,7 +16,6 @@ models:
                 max_value: 50
 
       - name: pressure_hpa
-        description: "Absolute atmospheric pressure in hPa"
         tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -31,7 +23,6 @@ models:
                 max_value: 1100
 
       - name: humidity
-        description: "Outdoor relative humidity percentage"
         tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -39,7 +30,6 @@ models:
                 max_value: 100
 
       - name: wind_speed
-        description: "Wind speed in meters per second"
         tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -47,7 +37,6 @@ models:
                 max_value: 80
 
       - name: solar_radiation
-        description: "Solar radiation in Watts per square meter"
         tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -55,7 +44,6 @@ models:
                 max_value: 1500
 
       - name: hourly_rain
-        description: "Hourly precipitation in millimeters"
         tests:
           - dbt_utils.accepted_range:
               arguments:

@@ -12,6 +12,8 @@
  * @date 2026
  */
 
+{% set mock_now = env_var('WAID_MOCK_NOW', '') %}
+
 WITH source_predictions AS (
     -- Extract and clean model predictions with incremental window filtering
     SELECT
@@ -24,9 +26,14 @@ WITH source_predictions AS (
         CASE WHEN pred_solar > 0.0 THEN pred_solar ELSE 0.0 END AS pred_solar,
         CASE WHEN pred_rain > 0.0 THEN pred_rain ELSE 0.0 END AS pred_rain
     FROM {{ ref('inference_prediction') }}
+    WHERE 1=1
+    {% if mock_now is not none %}
+      AND timestamp <= '{{ mock_now }}'
+    {% endif %}
+
     {% if is_incremental() %}
     -- Process records from the last 3 days for incremental efficiency
-    WHERE timestamp >= datetime((SELECT COALESCE(MAX(timestamp), '1970-01-01 00:00:00') FROM {{ this }}), '-3 day')
+    AND timestamp >= datetime((SELECT COALESCE(MAX(timestamp), '1970-01-01 00:00:00') FROM {{ this }}), '-3 day')
     {% endif %}
 ),
 
@@ -42,9 +49,11 @@ source_actuals AS (
         hourly_rain AS actual_rain
     FROM {{ ref('stg_ecowitt') }}
     WHERE temperature IS NOT NULL
+      {% if mock_now is not none %}
+      AND timestamp <= '{{ mock_now }}'
+      {% endif %}
 ),
 
--- Refactored to use int_matches_bias instead of the deleted int_matches_normalized
 source_era5 AS (
     -- Extract ERA5 reanalysis baseline values for comparison
     SELECT
@@ -56,6 +65,10 @@ source_era5 AS (
         era5_solar AS solar_era5,
         era5_rain AS rain_era5
     FROM {{ ref('int_matches_bias') }}
+    WHERE 1=1
+    {% if mock_now is not none %}
+      AND timestamp <= '{{ mock_now }}'
+    {% endif %}
 )
 
 -- Combine predictions, actuals, and benchmarks to compute evaluation metrics

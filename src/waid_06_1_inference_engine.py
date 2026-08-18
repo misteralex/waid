@@ -21,19 +21,29 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from loguru import logger
 import tensorflow as tf
+import argparse
 
 sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
 from boot import (
     WaidBoot,
     WError,
+    validate_mock_timestamp,
 )
 
 # Import shared physics utilities from Single Source of Truth
-from waid_utils import calculate_theoretical_solar_radiation
+from waid_shared import calculate_theoretical_solar_radiation
 
 
 def add_cyclic_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds sine and cosine encoded temporal features for daily and seasonal cycles."""
+    """
+    Adds sine and cosine encoded temporal features for daily and seasonal cycles.
+    
+    Args:
+        df (pd.DataFrame): Input dataframe containing the 'timestamp' column.
+        
+    Returns:
+        pd.DataFrame: DataFrame enriched with cyclic temporal features.
+    """
     ts = pd.to_datetime(df['timestamp'])
     
     hour = ts.dt.hour + ts.dt.minute / 60.0
@@ -55,7 +65,12 @@ class WaidInferenceEngine:
     """
 
     def __init__(self, env: WaidBoot):
-        """Initializes the engine with shared environment settings."""
+        """
+        Initializes the inference engine with shared environment settings.
+        
+        Args:
+            env (WaidBoot): The initialized application bootstrap configuration.
+        """
         self.env = env
         
         self.model_file = Path(self.env.ml_models_dir) / self.env.ml_model_h5_file
@@ -75,8 +90,16 @@ class WaidInferenceEngine:
         self,
         file_path: str | Path | None = None,
         chunk_size: int = 65536) -> str:
+        """
+        Calculates a short MD5 hash of a model file for version control.
         
-        # Calculate a short MD5 hash of a model file for version control
+        Args:
+            file_path (str | Path | None): Optional target file path to hash.
+            chunk_size (int): Size of chunks read from file for hashing.
+            
+        Returns:
+            str: The first 8 characters of the MD5 hash.
+        """
         target_path = file_path if file_path is not None else self.model_file
         hasher = hashlib.md5()
         
@@ -113,7 +136,13 @@ class WaidInferenceEngine:
             )
 
         conn = sqlite3.connect(self.env.waid_db)
-        last_ts = pd.read_sql("SELECT timestamp FROM ecowitt_records ORDER BY timestamp DESC LIMIT 1", conn)
+        if self.env.mock_now:
+            last_ts = pd.read_sql(
+                "SELECT timestamp FROM ecowitt_records WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                conn, params=(self.env.mock_now,)
+            )
+        else:
+            last_ts = pd.read_sql("SELECT timestamp FROM ecowitt_records ORDER BY timestamp DESC LIMIT 1", conn)
         conn.close()
         
         if last_ts.empty:
@@ -125,7 +154,12 @@ class WaidInferenceEngine:
         logger.info("System health check passed.")
 
     def ensure_db_structure(self, pred_df: pd.DataFrame) -> None:
-        """Synchronizes database schema with predicted DataFrame structure."""
+        """
+        Synchronizes database schema with predicted DataFrame structure.
+        
+        Args:
+            pred_df (pd.DataFrame): DataFrame containing prediction records.
+        """
         conn = sqlite3.connect(self.env.waid_db)
         cursor = conn.cursor()
         
@@ -167,7 +201,12 @@ class WaidInferenceEngine:
         logger.debug("Database schema synchronization completed successfully.")
 
     def prepare_and_predict(self) -> pd.DataFrame:
-        """Runs inference using pure Ecowitt records, theoretical solar enrichment, and dual scalers."""
+        """
+        Runs inference using pure Ecowitt records, theoretical solar enrichment, and dual scalers.
+        
+        Returns:
+            pd.DataFrame: DataFrame containing generated forecast records.
+        """
         x_scaler = joblib.load(self.x_scaler_file)
         y_scaler = joblib.load(self.y_scaler_file)
         
@@ -188,14 +227,23 @@ class WaidInferenceEngine:
                 code=self.env.waid_exit.DATA_FAIL
             )
 
-
         select_cols = ", ".join(['timestamp'] + ecowitt_features)
-        query = f"""
-            SELECT {select_cols}
-            FROM ecowitt_records 
-            ORDER BY timestamp DESC LIMIT {self.env.lookback_hours}
-        """
-        df_raw = pd.read_sql_query(query, conn)
+        if self.env.mock_now:
+            query = f"""
+                SELECT {select_cols}
+                FROM ecowitt_records 
+                WHERE timestamp <= ?
+                ORDER BY timestamp DESC LIMIT {self.env.lookback_hours}
+            """
+            df_raw = pd.read_sql_query(query, conn, params=(self.env.mock_now,))
+        else:
+            query = f"""
+                SELECT {select_cols}
+                FROM ecowitt_records 
+                ORDER BY timestamp DESC LIMIT {self.env.lookback_hours}
+            """
+            df_raw = pd.read_sql_query(query, conn)
+            
         conn.close()
         
         if len(df_raw) < self.env.lookback_hours:
@@ -203,9 +251,6 @@ class WaidInferenceEngine:
                 f"Insufficient data for inference (needed {self.env.lookback_hours} hours, got {len(df_raw)}).", 
                 code=self.env.waid_exit.DATA_FAIL
             )
-
-        # Order chronologically (ASC)
-        df_raw = df_raw.iloc[::-1].reset_index(drop=True)
         
         # Order chronologically (ASC)
         df_raw = df_raw.iloc[::-1].reset_index(drop=True)
@@ -260,7 +305,7 @@ class WaidInferenceEngine:
             for idx, col in enumerate(ecowitt_field_features):
                 row[col] = float(pred_physical[h, idx])
             predictions.append(row)
-            
+
         pred_df = pd.DataFrame(predictions)
         logger.info(f"Inference completed and reconstructed. Model: {self.model_file.name}")
         return pred_df
@@ -302,14 +347,25 @@ class WaidInferenceEngine:
 
 
 def main() -> int:
+    """
+    Main entry point for executing the inference engine workflow from command line.
+    
+    Returns:
+        int: Process exit status code.
+    """
     try:
+        parser = argparse.ArgumentParser(description="WAID Inference Engine")
+        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        args, _ = parser.parse_known_args()
+
         env = WaidBoot()
+
+        if args.mock_now:
+            env.mock_now = validate_mock_timestamp(args.mock_now)
+            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
 
         logger.warning("Inference script is running with GPU disabled. Ensure this is intended.")
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
-        if len(sys.argv) > 1:
-            logger.warning("No expected input parameters")
 
         engine = WaidInferenceEngine(env)
         engine.run_inference()

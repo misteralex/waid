@@ -37,7 +37,7 @@ from boot import (
 )
 
 # Import shared utilities from Single Source of Truth
-from waid_utils import calculate_theoretical_solar_radiation, get_station_metadata
+from waid_shared import calculate_theoretical_solar_radiation, get_station_metadata
 
 def denormalize_predictions(y_scaler, preds_scaled: np.ndarray) -> np.ndarray:
     """Denormalizes predictions using the provided y_scaler supporting 2D or 3D arrays."""
@@ -214,124 +214,82 @@ def register_trained_model(
         raise WError(f"Failed to register model in SQLite Feature Store: {e}", code=WaidExit.DATA_FAIL)
 
 
+def get_start_index_for_period(period: str, db_timestamps: list) -> int:
+    """Finds the first index in the global timestamp array matching the period string."""
+    # Convert period format 'YYYY_MM' to 'YYYY-MM' to match database timestamps
+    formatted_period = period.replace("_", "-")
+    for idx, ts in enumerate(db_timestamps):
+        if ts.startswith(formatted_period):
+            return idx
+    raise WError(f"Critical: Period '{period}' not found in stg_ecowitt database timestamps.", code=WaidExit.DATA_FAIL)
+
+
 def train_model(env: WaidBoot, station_id: str, station_name: str, periods: list[str], min_training_days: int) -> int:
-    """Executes incremental feature scaling, builds tf.data pipeline, compiles LSTM network, performs training, and saves model artifacts."""
-    
-    # 1. Fetch all timestamps from stg_ecowitt for global theoretical solar calculation
+    # 1. Fetch timestamps for alignment
     query = "SELECT timestamp FROM stg_ecowitt ORDER BY timestamp ASC"
     try:
         with sqlite3.connect(env.waid_db) as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            db_timestamps = [row[0] for row in rows]
+            db_timestamps = [row[0] for row in conn.execute(query).fetchall()]
     except sqlite3.Error as e:
-        raise WError(f"Failed to fetch timestamps for theoretical solar feature: {e}", code=WaidExit.DATA_FAIL)
+        raise WError(f"Database access failed: {e}", code=WaidExit.DATA_FAIL)
 
     if not db_timestamps:
-        raise WError("No timestamps found in 'stg_ecowitt' for feature enrichment.", code=WaidExit.DATA_FAIL)
+        raise WError("No timestamps found in 'stg_ecowitt'.", code=WaidExit.DATA_FAIL)
 
-    logger.info("Calculating theoretical clear-sky solar radiation for tensor enrichment...")
     theoretical_all = calculate_theoretical_solar_radiation(
-        np.array(db_timestamps), 
-        env.ecowitt_latitude, 
-        env.ecowitt_longitude, 
-        env.tz_timezone
+        np.array(db_timestamps), env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
     )
     
-    # --- DEBUG: Verifica del range del contributo solare teorico ---
-    logger.debug(f"Physics Guardrail - Theoretical Solar Radiation calculation summary:")
-    logger.debug(f"  - Count: {len(theoretical_all)}")
-    logger.debug(f"  - Range: Min={theoretical_all.min():.2f} W/m², Max={theoretical_all.max():.2f} W/m²")
-
-    # 2. Pass 1: Incremental Scaler Fitting (partial_fit) period by period to avoid OOM
-    x_scaler = StandardScaler()
-    y_scaler = StandardScaler()
-    
-    global_idx = 0
+    # 2. Incremental Scaler Fitting
+    x_scaler, y_scaler = StandardScaler(), StandardScaler()
     total_samples = 0
     
     for p in periods:
-        path_x = env.ml_tensors_dir / f'X_raw_{p}.pkl'
-        path_y = env.ml_tensors_dir / f'Y_raw_{p}.pkl'
-        
-        if not path_x.exists() or not path_y.exists():
-            raise WError(f"Missing raw tensor files for period: {p}", code=WaidExit.DATA_FAIL)
-            
-        X = joblib.load(path_x)
-        y = joblib.load(path_y)
+        X = joblib.load(env.ml_tensors_dir / f'X_raw_{p}.pkl')
+        y = joblib.load(env.ml_tensors_dir / f'Y_raw_{p}.pkl')
         n_samples, n_timesteps, _ = X.shape
         total_samples += n_samples
         
+        # Semantic Lookup (Replaces global_idx)
+        start_idx = get_start_index_for_period(p, db_timestamps)
+        
         theo_solar_3d = np.zeros((n_samples, n_timesteps, 1))
         for i in range(n_samples):
-            curr_idx = global_idx + i
+            curr_idx = start_idx + i
             if curr_idx + n_timesteps <= len(theoretical_all):
                 theo_solar_3d[i, :, 0] = theoretical_all[curr_idx : curr_idx + n_timesteps]
             else:
                 theo_solar_3d[i, :, 0] = theoretical_all[-n_timesteps:]
-            logger.debug(f"Physics Guardrail - Period {p}: Sample {i} theoretical range [{theo_solar_3d[i].min():.1f} - {theo_solar_3d[i].max():.1f}]")
             
         X_enriched = np.concatenate([X, theo_solar_3d], axis=2)
-        global_idx += n_samples
-        
-        # Validates tensor shapes for learning
-        if X_enriched.shape[2] != env.n_input_features:
-            raise WError(
-                f"Input Feature Mismatch! Expected {env.n_input_features}, got {X_enriched.shape[2]}",
-                code=WaidExit.DATA_FAIL
-            )
-            
-        if y.shape[2] != env.n_output_features:
-            raise WError(
-                f"Target Feature Mismatch! Expected {env.n_output_features}, got {y.shape[2]}",
-                code=WaidExit.DATA_FAIL
-            )
-
         x_scaler.partial_fit(X_enriched.reshape(-1, env.n_input_features))
         y_scaler.partial_fit(y.reshape(-1, env.n_output_features))
 
     # Save Scalers
-    os.makedirs(env.ml_models_dir, exist_ok=True)
     joblib.dump(x_scaler, env.ml_models_dir / env.ml_input_scaler_pkl_file)
     joblib.dump(y_scaler, env.ml_models_dir / env.ml_output_scaler_pkl_file)
 
-    min_required_samples = min_training_days * 24
-    logger.info(f"Total dataset samples across periods {periods}: {total_samples}")
-    if total_samples < min_required_samples:
-        raise WError(
-            f"Guardrail Triggered: Available samples ({total_samples}) "
-            f"< minimum required ({min_required_samples} samples for {min_training_days} days). Training aborted.",
-            code=WaidExit.DATA_FAIL
-        )
-
-    # 3. Pass 2: Build tf.data.Dataset pipeline period by period
+    # 3. Build Dataset Pipeline
     datasets = []
-    global_idx = 0
-    
     for p in periods:
-        path_x = env.ml_tensors_dir / f'X_raw_{p}.pkl'
-        path_y = env.ml_tensors_dir / f'Y_raw_{p}.pkl'
-        
-        X = joblib.load(path_x)
-        y = joblib.load(path_y)
+        X = joblib.load(env.ml_tensors_dir / f'X_raw_{p}.pkl')
+        y = joblib.load(env.ml_tensors_dir / f'Y_raw_{p}.pkl')
         n_samples, n_timesteps, _ = X.shape
         
+        start_idx = get_start_index_for_period(p, db_timestamps)
         theo_solar_3d = np.zeros((n_samples, n_timesteps, 1))
         for i in range(n_samples):
-            curr_idx = global_idx + i
+            curr_idx = start_idx + i
             if curr_idx + n_timesteps <= len(theoretical_all):
                 theo_solar_3d[i, :, 0] = theoretical_all[curr_idx : curr_idx + n_timesteps]
             else:
                 theo_solar_3d[i, :, 0] = theoretical_all[-n_timesteps:]
-        X_enriched = np.concatenate([X, theo_solar_3d], axis=2)
-        global_idx += n_samples
         
+        X_enriched = np.concatenate([X, theo_solar_3d], axis=2)
         X_scaled = x_scaler.transform(X_enriched.reshape(-1, env.n_input_features)).reshape(n_samples, n_timesteps, env.n_input_features)
         y_scaled = y_scaler.transform(y.reshape(-1, env.n_output_features)).reshape(n_samples, y.shape[1], env.n_output_features)
         
-        ds_period = tf.data.Dataset.from_tensor_slices((X_scaled, y_scaled))
-        datasets.append(ds_period)
+        datasets.append(tf.data.Dataset.from_tensor_slices((X_scaled, y_scaled)))
 
     full_ds = datasets[0]
     for ds in datasets[1:]:

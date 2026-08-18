@@ -13,20 +13,35 @@ import sys
 import sqlite3
 from pathlib import Path
 from loguru import logger
+import argparse
 
 sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
 from boot import (
     WaidBoot,
     WError,
+    validate_mock_timestamp,
 )
 
 def main() -> int:
+    """
+    Executes the inference quality check pipeline, verifying database tables and record counts.
+    
+    Returns:
+        int: Process exit status code.
+    """
     try:
+        parser = argparse.ArgumentParser(description="WAID Inference Engine")
+        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        args, _ = parser.parse_known_args()
+        
         env = WaidBoot()
-        db_path = env.waid_db
-        logger.info(f"Starting quality check using DB: {db_path}")
+        
+        if args.mock_now:
+            env.mock_now = validate_mock_timestamp(args.mock_now)
+            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
 
-        conn = sqlite3.connect(db_path)
+        logger.info(f"Starting quality check using DB: {env.waid_db}")
+        conn = sqlite3.connect(env.waid_db)
         cursor = conn.cursor()
 
         # Verify existence of inference tables and check record counts
@@ -35,7 +50,7 @@ def main() -> int:
             logger.error("Table 'inference_records' does not exist in the database.")
             conn.close()
             return env.waid_exit.DATA_FAIL
-
+        
         cursor.execute("SELECT COUNT(*) FROM inference_records;")
         total_records = cursor.fetchone()[0]
         logger.info(f"Total inference records found: {total_records}")

@@ -6,109 +6,181 @@ By combining temporal resampling, spatial feature extraction, and residual deep 
 
 ---
 
+## 🌐 Live Operational Dashboard
+
+The live demonstration and operational dashboard of the WAID framework is hosted on Streamlit Cloud:
+
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://waid--analytics.streamlit.app/)
+
+> **Live Web App**: <https://waid--analytics.streamlit.app/>
+
+### 🚀 Public Access & Deployment Overview
+```text
++-----------------------------------------------------------------------+
+|                         WAID LIVE DEMO                                |
+|             https://waid--analytics.streamlit.app/                    |
++-----------------------------------------------------------------------+
+|  • Operational Nowcasting UI: Live predictions vs Ecowitt vs ERA5     |
+|  • Isolated Deployment DB: Syncs via Stage 08 ETL export pipeline     |
+|  • Continuous Integration: Automatically rebuilt upon git push        |
++-----------------------------------------------------------------------+
+```
+
+---
+
+
 ## 🏛️ Architecture & Workflow
 
 WAID implements a modular 6-stage data processing pipeline built for reliable edge-to-cloud execution:
 
-1. **Data Ingestion (Extraction)** — Ingests raw telemetry from local Ecowitt sensors and multi-variable global reanalysis feeds (ERA5).
-2. **Data Discovery & Profiling (Catalog)** — Validates schema consistency, checks telemetry freshness, and catalogs metadata across pipeline runs.
-3. **Synchronization & Data Alignment (Transform)** — Resamples asynchronous sensor streams into UTC-aligned temporal intervals with bounded time-series interpolation.
-4. **Performance Metrics & Bias Study (Analyze/Benchmark)** — Evaluates historical baseline drift and computes continuous error metrics (MAE, RMSE, Bias) between global forecasts and ground-truth station observations.
-5. **Baseline Model Training (Machine Learning)** — Trains sequence-to-sequence LSTM models on physical delta features and cyclic time encodings (sine/cosine transformations).
-6. **Reporting & Visualization (Load/Viz)** — Generates 6-hour operational forecasts, executes dbt transformations with SQLite/Postgres target adapters, and continuously reconciles historical predictions against real-time telemetry.
+### Data Pipeline Stages
+
+#### Stage 01 — Ingestion & Profiling
+Ingests and profiles Ecowitt and ERA5 data, validating schemas, freshness, integrity, and metadata before downstream processing.
+
+→ Ecowitt + ERA5 → schema validation → freshness → metadata catalog
+
+#### Stage 02 — Synchronization & Staging
+Synchronizes heterogeneous weather datasets onto a consistent temporal framework through resampling, UTC alignment, and controlled interpolation, producing reliable staged time series.
+
+→ resampling → UTC alignment → bounded interpolation → staged time series
+
+#### Stage 03 — Matching & Bias Analysis
+Matches forecasts against observations, quantifies prediction error and bias, and tracks baseline drift to establish a reliable performance reference.
+
+→ forecast/observation matching → MAE/RMSE/Bias → baseline drift
+
+#### Stage 04 — Station Specs & Setup
+Defines station-specific sensor characteristics, standardizes variable mappings and units, and establishes the metadata required for reliable downstream processing.
+
+→ sensor/station configuration → variable mapping → units → station metadata
+
+#### Stage 05 — Machine Learning Tensors & Training
+Builds time-aware machine learning tensors from engineered meteorological features and trains the LSTM forecasting model.
+
+→ feature engineering → physical deltas → sin/cos temporal encoding → LSTM training
+
+#### Stage 06 — Inference & Quality Assessment
+Executes model inference, validates predictions against operational constraints and ground truth, assesses forecast quality, and reconciles outputs with incoming telemetry.
+
+→ model inference → prediction validation → quality assessment → telemetry reconciliation
+
+#### Stage 07 — Operational Forecast
+Generate a physics-constrained 6-hour operational forecast, persist it as an auditable forecast state, and continuously reconcile previous predictions against newly observed telemetry.
+
+→ Telemetry + Model Artifacts → Inference → Guardrails → Quantization → 6h Forecast → Reconciliation → Forecast Persistence → deployment database
+
+#### Stage 08 — Data Product & Visualization
+Transforms operational forecast outputs into a lightweight, deployable data product for reporting, visualization, and external consumption.
+
+→ export → dbt transformations → deployment database → CLI reporting / Streamlit
 
 ---
 
-## 🚀 Quick Start & Usage
+## ⚙️ Configuration & Environment Variables
 
-## Configuration (`config/boot.env`)
+The framework relies heavily on predefined environment variables to manage root paths, execution modes, and mock timelines across local development and production environments.
 
-The `config/boot.env` file defines the universal system infrastructure matrix and operational directories for the project. 
+* **`WAID_SOURCE`**: Must be predefined in your terminal session, pointing directly to your project root directory (e.g., `/home/alex/waid`).
+* **`WAID_SETUP_MODE`**: Controls the setup initialization behavior within the pipeline (e.g., `0` for standard incremental regime, `1` for soft reset, and `2` for hard reset).
+* **`WAID_ENV`**: Manages the deployment and execution context. Setting `WAID_ENV=prod` enables automated deployment synchronization and git push scripts, whereas `dev` keeps operations strictly local.
+* **`WAID_MOCK_NOW`**: Overrides the current system timestamp during simulations or backfilling to evaluate historic periods deterministically.
 
-> **Important**: The environment variable **`WAID_SOURCE`** must be predefined in your terminal session, pointing directly to your project root directory (e.g., `/home/alex/waid`).
+---
 
-```env
-WAID_CONFIG_DIR=$WAID_SOURCE/config
-WAID_DATA_DIR=$WAID_SOURCE/data
-WAID_LOG_DIR=$WAID_SOURCE/logs
-WAID_LOG_LEVEL=INFO
+## 🚀 Scheduling & Orchestration Guide
+
+### 1. Continuous Operational Scheduling (`waid_scheduler.py`)
+The scheduler operates as a long-running operational service or manages retroactive simulations step-by-step. 
+
+* **Standard Continuous Execution**:
+  ```bash
+  export WAID_SOURCE=/home/alex/waid
+  export WAID_ENV=prod
+  python src/waid_scheduler.py
+
 ```
 
-To quickly start the pipeline and configure the local working environment, run the following commands from the terminal:
+On first boot, it verifies whether the SQLite database exists via `check_initial_setup_needed()`. If missing, it automatically triggers an initial historical `backfill` phase before entering the continuous operational loop at predefined intervals.
+
+* **Retroactive Simulation Mode (`--retroactive`)**:
+To simulate historical performance step-by-step across specific timelines, provide the required start and end timestamps using either `--mock-begin`/`--mock-end` or `--begin-period`/`--end-period`:
+```bash
+export WAID_SOURCE=/home/alex/waid
+export WAID_ENV=dev
+python src/waid_scheduler.py --retroactive --mock-begin "2026-01-01 00:00:00" --mock-end "2026-01-05 00:00:00"
+
+```
+
+
+This mode executes the setup sequence, iterates through the specified interval using incremental steps, and dynamically assigns `WAID_MOCK_NOW` for each iteration.
+
+### 2. Orchestration & Time Mocking (`waid_orchestrate.py`)
+
+The core orchestrator coordinates individual pipeline stages. To test or execute the pipeline against a specific simulated point in time, propagate the `WAID_MOCK_NOW` environment variable directly from your terminal:
 
 ```bash
-# 1. Clone repository and set up environment
-git clone [https://github.com/username/waid.git](https://github.com/username/waid.git)
-cd waid
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+export WAID_SOURCE=/home/alex/waid
+export WAID_MOCK_NOW="2026-02-15 12:00:00"
+python src/waid_orchestrate.py --run-mode incremental
 
-# 2. Configure local environment variables and station settings
-cp config/boot.env.example config/boot.env
-cp config/waid.env.example config/waid.env
-# Edit .env with your local parameters (e.g., station IP 192.168.1.100, coordinates for Rome: 41.9028, 12.4964)
-
-# 3. Run dbt preparation steps
-dbt clean
-dbt deps
-dbt compile
-
-# 4. Execute data ingestion workflows
-python src/waid_01_1_ingest_ecowitt.py --ip 192.168.1.100
-python src/waid_01_2_ingest_era5.py --lat 41.9028 --lon 12.4964
-
-# 5. Run data discovery, profiling, and synchronization
-python src/waid_02_catalog_profiling.py
-dbt run --select stg_ecowitt
-python src/waid_03_1_match_datasets.py
-
-# 6. Run bias analysis and model inference with guardrails
-dbt run --select int_matches_bias
-python src/waid_04_inference.py --platform host
 ```
 
 ---
 
-## ⚙️ Pipeline Components & Execution Reference
+## 🛠️ Pipeline Components & Execution Reference
 
 The framework is organized into modular steps and orchestration utilities spanning ingestion, transformation, machine learning, and visualization:
 
 ### Stage 01: Ingestion & Profiling
+
 * **`waid_01_1_ingest_ecowitt.py`**: Automatically downloads monthly CSV files directly from the hardware gateway via HTTP (`wget`/`urllib`), storing raw files as `{YYYYMM}.csv` or `{YYYYMM}.full` under `ecowitt_dir` managed by `WaidBoot`.
 * **`waid_01_2_ingest_era5.py`**: Connects directly to Copernicus CDS APIs to download, extract, and consolidate ERA5 single-level atmospheric reanalysis data into multidimensional NetCDF files (`.nc` and `.full`) using standardized UTC timestamps.
 * **`waid_02_2_profile_era5.py`**: Inspects structural integrity, dimensions, variables, units, and missing values (`NaN`) in ERA5 NetCDF files, validating latitude/longitude against local weather stations.
 
 ### Stage 02: Synchronization & Staging
+
 * **`waid_02_1_sync_ecowitt.py`**: Parses Ecowitt telemetry CSVs, normalizes timestamps to UTC, and performs safe `INSERT OR IGNORE` batch updates into SQLite via a temporary `staging_ecowitt` table using an epoch timestamp.
-* **`dbt staging models (`stg_ecowitt`)`**: Cleans and types raw Ecowitt fields (temperature, humidity, pressure, wind, solar radiation, rain) with data quality checks (`--store-failures`).
+* **`dbt staging models (`stg_ecowitt`)**`: Cleans and types raw Ecowitt fields (temperature, humidity, pressure, wind, solar radiation, rain) with data quality checks (`--store-failures`).
 
 ### Stage 03: Matching & Bias Analysis
+
 * **`waid_03_1_match_datasets.py`**: Performs temporal/spatial matching between cleaned hourly Ecowitt records and ERA5 reanalysis data via a left join, saving outputs to `match_records` and generating CSV checkpoints.
-* **`dbt intermediate models (`stg_matches`, `int_matches_bias`)`**: Standardizes datasets, computes operational sensor-vs-ERA5 drift features, and tracks threshold boundaries dynamically via environment variables.
+* **`dbt intermediate models (`stg_matches`, `int_matches_bias`)**`: Standardizes datasets, computes operational sensor-vs-ERA5 drift features, and tracks threshold boundaries dynamically via environment variables.
 * **`utils/waid_analyze_bias.py`**: Quick diagnostic sanity checker computing descriptive statistics (mean, std, min, max) for key weather variables over a specified `YYYYMM` period.
 
 ### Stage 04: Station Specs & Setup
+
 * **`waid_04_1_setup_specs.py`**: Analyzes the last 14 days of raw Ecowitt data to estimate sensor resolution and deadband specifications, storing them as JSON configurations within the `station_metadata` table.
 
 ### Stage 05: Machine Learning Tensors & Training
+
 * **`waid_05_1_ml_tensors.py`**: Extracts hourly telemetry, enriches inputs with cyclic time embeddings (hour/day), and serializes sliding-window 3D tensors (`X` samples × lookback × 10 features, `Y` samples × forecast × 6 features) into `.pkl` files using `joblib`.
 * **`waid_05_2_ml_train.py`**: Loads 3D tensors via a memory-efficient `tf.data` pipeline, adds theoretical solar radiation features, trains an LSTM network, and updates the SQLite Feature Store Model Registry.
 
 ### Stage 06: Inference & Quality Assessment
+
 * **`waid_06_1_inference_engine.py`**: Executes the end-to-end inference lifecycle by validating model artifacts, enriching telemetry features with cyclic time components and clear-sky radiation, and persisting predictions into `inference_records`.
-* **`dbt mart models (`inference_stats`, `inference_prediction`, `inference_quality`, `inference_forecast`)`**: Aggregates metrics, maintains incremental model outputs, and evaluates prediction errors against ground-truth and ERA5 baselines.
+* **`dbt mart models (`inference_stats`, `inference_prediction`, `inference_quality`, `inference_forecast`)**`: Aggregates metrics, maintains incremental model outputs, and evaluates prediction errors against ground-truth and ERA5 baselines.
 * **`waid_06_5_inference_quality.py`**: Verifies database schemas, table row counts, and consistency benchmarks for inference and quality tables.
 
 ### Stage 07 & 08: Forecasting & Visualization
+
 * **`waid_07_1_inference_forecast.py`**: Manages the 6-hour forecasting pipeline, enforcing physics-safe guardrails and hardware quantization, and logging multi-step forecasts, actuals, historical biases, and drifts.
-* **`waid_07_2_export_deploy_db.py`**: executes an ETL pipeline that extracts operational weather forecasts and quality metrics from the internal lab database, consolidates the data via a left join, and exports it into an isolated SQLite database (`WAID_DB_DEPLOY_FILE`) for public dissemination
-* **`waid_08_1_viz_cli.py`**: Command-line interface displaying formatted historical and future operational forecast tables with computed deltas and drifts.
-* **`waid_08_2_viz_streamlit.py`**: provides a Streamlit-based analytics dashboard that monitors operational weather performance, including 3-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics. It also includes an automated deployment packaging utility to bundle the application, database, and dependencies for external hosting.
+* **`waid_07_2_export_deploy_db.py`**: Executes an ETL pipeline that extracts operational weather forecasts and quality metrics from the internal lab database, consolidates the data via a left join, and exports it into an isolated SQLite database (`WAID_DB_DEPLOY_FILE`) for public dissemination.
+* **`waid_08_1_viz_streamlit_update.py`**: It acts as the final synchronization and deployment script (with safety controls via `WAID_ENV` to handle git push only in production), placing itself consistently at the end of the orchestration pipeline.
+* **`waid_08_2_viz_streamlit.py`**: Provides a Streamlit-based analytics dashboard that monitors operational weather performance, including 3-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics.
+* **`waid_08_3_viz_cli.py`**: To execute the CLI visualizer for operational forecasts (including ERA5 ground truth comparisons and drift metrics), run the following command from the repository root:
+```bash
+python src/waid_08_3_viz_cli.py
+
+```
+
+
 
 ---
 
-## 🛠️ Tech Stack & Infrastructure
+## 💻 Tech Stack & Infrastructure
 
 * **Core Language:** Python 3.12 / 3.13
 * **Machine Learning:** TensorFlow / Keras (LSTM models), Scikit-Learn
@@ -124,3 +196,8 @@ The framework is organized into modular steps and orchestration utilities spanni
 * **Incremental Forecast Reconciliation:** Automatically updates past predictions with real telemetry as new readings become available to evaluate live drift.
 * **Resilient Live Fallbacks:** Built-in fault tolerance for network delays, timestamp microsecond normalization, and boundary-checked physical metric clipping (e.g., solar radiation and precipitation bounds).
 * **Deterministic Deployment:** Fully automated model artifact registry storing scaler pipelines, versioned network weights, and reproducible evaluation benchmarks.
+
+```
+
+```
+

@@ -12,6 +12,8 @@
  * @date 2026
  */
 
+{% set mock_now = env_var('WAID_MOCK_NOW', '') %}
+
 WITH new_predictions AS (
     SELECT
         lp.timestamp,
@@ -23,10 +25,14 @@ WITH new_predictions AS (
         lp.solar_rad_w_m2 AS pred_solar,
         lp.hourly_rain_mm AS pred_rain
     FROM {{ source('external_raw', 'inference_records') }} lp
-    
+    WHERE 1=1
+    {% if mock_now is not none %}
+      AND lp.timestamp <= '{{ mock_now }}'
+    {% endif %}
+
     {% if is_incremental() %}
-    -- Process only predictions subsequent to the last saved one
-    WHERE lp.timestamp > (SELECT MAX(timestamp) FROM {{ this }})
+      -- Process only predictions subsequent to the last saved one
+      AND lp.timestamp > (SELECT COALESCE(MAX(timestamp), '1970-01-01 00:00:00') FROM {{ this }})
     {% endif %}
 )
 
