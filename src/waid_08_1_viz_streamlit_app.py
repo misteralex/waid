@@ -3,7 +3,7 @@
 """
 @file waid_08_2_viz_streamlit_app.py
 @brief Streamlit public analytics dashboard featuring dedicated tabs for all 6 weather features and 3-way comparisons,
-       integrated with automated deployment packaging and standard error handling.
+       integrated with automated deployment packaging, dynamic DB loading (SQLite/Supabase), and standard error handling.
 @author AF
 @date 2026
 """
@@ -15,9 +15,23 @@ import shutil
 import argparse
 import pandas as pd
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 import plotly.graph_objects as go
 from pathlib import Path
 from loguru import logger
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
+
+from dotenv import load_dotenv
+
+# Calculate absolute project root path and load configuration env file
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+dotenv_path = PROJECT_ROOT / "config" / "waid.env"
+
+if dotenv_path.exists():
+    load_dotenv(dotenv_path=dotenv_path)
+else:
+    load_dotenv()  # Fallback to default .env file in project root
 
 # Inject configuration path safely
 sys.path.append(
@@ -54,9 +68,13 @@ def run_deployment_setup(env: WaidBoot) -> None:
     """
     deploy_dir = Path(env.deploy_dir)
     src_script = Path(__file__).resolve()
-    db_source = Path(env.waid_data_dir) / env.waid_db_deploy_file
+    db_source = Path(env.waid_data_dir) / env.deploy_file
     
+    logger.info(f"🔶 Environment : {getattr(env, 'env_name', os.getenv('WAID_ENV', 'unknown'))}")
+    logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
+    logger.info(f"🔶 DB Target   : {getattr(env, 'target_env', os.getenv('WAID_TARGET_ENV', 'draft'))}")    
     logger.info(f"Initializing deployment package at: {deploy_dir}")
+    
     deploy_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Write requirements.txt
@@ -67,6 +85,8 @@ def run_deployment_setup(env: WaidBoot) -> None:
         "loguru>=0.7.0\n"
         "pandas>=2.0.0\n"
         "numpy>=1.24.0\n"
+        "sqlalchemy>=2.0.0\n"
+        "psycopg2-binary>=2.9.0\n"
     )
     with open(deploy_dir / "requirements.txt", "w", encoding="utf-8") as f:
         f.write(req_content)
@@ -92,82 +112,142 @@ def run_deployment_setup(env: WaidBoot) -> None:
 @st.cache_data(ttl=300)
 def load_public_data() -> pd.DataFrame:
     """
-    @brief Loads public analytics data with fallback strategy for Streamlit Cloud.
+    @brief Loads public analytics data with dynamic routing based on env.deploy_mode (SQLite for local, Supabase for cloud).
+    
+    @return Cleaned pandas DataFrame containing operational metrics and forecasts.
     """
-    # 1. Path per Streamlit Cloud / ambiente di deploy
-    base_dir = Path(__file__).resolve().parent
-    cloud_deploy_db = base_dir / "data" / "waid_deploy.db" if base_dir.name == "deploy" else base_dir / "deploy" / "data" / "waid_deploy.db"
-    
-    # 2. Path relativo locale
-    local_deploy_db = Path("deploy/data/waid_deploy.db")
-    
-    if cloud_deploy_db.exists():
-        db_path = cloud_deploy_db
-    elif local_deploy_db.exists():
-        db_path = local_deploy_db
-    else:
-        try:
-            env = WaidBoot()
-            db_path = Path(env.deploy_dir) / "data" / env.waid_db_deploy_file
-        except Exception:
-            return pd.DataFrame()
-    
-    if not db_path.exists():
-        return pd.DataFrame()
-
     try:
-        with sqlite3.connect(db_path) as conn:
-            df = pd.read_sql_query("SELECT * FROM public_forecasts ORDER BY timestamp ASC", conn)
+        env = WaidBoot()
         
-        if df.empty:
+        # Sanity check for expected schema target
+        target_schema = (
+            getattr(env, "target_env", None) or 
+            os.getenv("WAID_TARGET_SCHEMA") or 
+            os.getenv("WAID_TARGET_ENV", "draft")
+        ).lower()
+        if target_schema not in ["draft", "prod", "retro"]:
+            target_schema = "draft"
+    
+        deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
+        
+    except Exception:
+        deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+
+    # Cloud Mode: Fetch data via SQLAlchemy from Supabase PostgreSQL
+    if deploy_mode == "cloud":
+        try:
+            db_config = getattr(env, "active_db_config", None)
+            
+            # Comprehensive extraction from DBCredentials dataclass or fallback to os.getenv
+            user = (
+                getattr(db_config, "user", None) or 
+                getattr(db_config, "db_user", None) or 
+                os.getenv("WAID_DB_USER")
+            )
+            password = (
+                getattr(db_config, "password", None) or 
+                getattr(db_config, "db_password", None) or 
+                os.getenv("WAID_DB_PASSWORD")
+            )
+            host = (
+                getattr(db_config, "host", None) or 
+                getattr(db_config, "db_host", None) or 
+                os.getenv("WAID_DB_HOST")
+            )
+            port = (
+                getattr(db_config, "port", None) or 
+                getattr(db_config, "db_port", "6543") or 
+                os.getenv("WAID_DB_PORT", "6543")
+            )
+            dbname = (
+                getattr(db_config, "dbname", None) or 
+                getattr(db_config, "db_name", "postgres") or 
+                os.getenv("WAID_DB_NAME", "postgres")
+            )
+
+            missing = []
+            if not user: missing.append("user")
+            if not password: missing.append("password")
+            if not host: missing.append("host")
+
+            if missing:
+                st.error(f"Missing Supabase credentials in environment: {', '.join(missing)}")
+                return pd.DataFrame()
+
+            schema_name = getattr(env, "target_env", None) or os.getenv("WAID_TARGET_SCHEMA") or os.getenv("WAID_TARGET_ENV", "draft").lower()
+
+            supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
+            engine = create_engine(supabase_url, poolclass=NullPool)
+
+            query = f"SELECT * FROM {schema_name}.public_forecasts ORDER BY timestamp ASC;"
+            df = pd.read_sql_query(query, engine)
+
+        except Exception as e:
+            st.error(f"Supabase connection error: {e}")
             return pd.DataFrame()
 
-        numeric_cols = [
-            'pred_temp', 'pred_rh', 'pred_pres', 'pred_wind', 'pred_rain', 'pred_solar',
-            'diff_temp', 'diff_rh', 'diff_pres', 'diff_wind', 'diff_rain', 'diff_solar',
-            'historical_bias_temp', 'historical_bias_rh', 'historical_bias_pres', 
-            'historical_bias_wind', 'historical_bias_rain', 'historical_bias_solar',
-            'drift_vs_bias_temp', 'drift_vs_bias_rh', 'drift_vs_bias_pres', 
-            'drift_vs_bias_wind', 'drift_vs_bias_rain', 'drift_vs_bias_solar',
-            'temp_era5', 'rh_era5', 'pres_era5', 'wind_era5', 'rain_era5', 'solar_era5',
-            'abs_error_temp', 'abs_error_rh', 'abs_error_pres', 'abs_error_wind', 'abs_error_rain', 'abs_error_solar'
-        ]
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Local Mode: Fetch data from SQLite database
+    else:
+        base_dir = Path(__file__).resolve().parent
+        cloud_deploy_db = base_dir / "data" / "waid_deploy.db" if base_dir.name == "deploy" else base_dir / "deploy" / "data" / "waid_deploy.db"
+        local_deploy_db = Path("deploy/data/waid_deploy.db")
+        
+        if cloud_deploy_db.exists():
+            db_path = cloud_deploy_db
+        elif local_deploy_db.exists():
+            db_path = local_deploy_db
+        else:
+            try:
+                db_path = Path(env.deploy_dir) / "data" / env.deploy_file
+            except Exception:
+                return pd.DataFrame()
+        
+        if not db_path.exists():
+            return pd.DataFrame()
 
-        return df
-    except Exception as e:
-        st.error(f"Database error: {e}")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                df = pd.read_sql_query("SELECT * FROM public_forecasts ORDER BY timestamp ASC", conn)
+        except Exception as e:
+            st.error(f"Local SQLite database error: {e}")
+            return pd.DataFrame()
+
+    if df.empty:
         return pd.DataFrame()
+
+    numeric_cols = [
+        'pred_temp', 'pred_rh', 'pred_pres', 'pred_wind', 'pred_rain', 'pred_solar',
+        'diff_temp', 'diff_rh', 'diff_pres', 'diff_wind', 'diff_rain', 'diff_solar',
+        'historical_bias_temp', 'historical_bias_rh', 'historical_bias_pres', 
+        'historical_bias_wind', 'historical_bias_rain', 'historical_bias_solar',
+        'drift_vs_bias_temp', 'drift_vs_bias_rh', 'drift_vs_bias_pres', 
+        'drift_vs_bias_wind', 'drift_vs_bias_rain', 'drift_vs_bias_solar',
+        'temp_era5', 'rh_era5', 'pres_era5', 'wind_era5', 'rain_era5', 'solar_era5',
+        'abs_error_temp', 'abs_error_rh', 'abs_error_pres', 'abs_error_wind', 'abs_error_rain', 'abs_error_solar'
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    return df
 
 def run_dashboard() -> None:
     """
     @brief Executes the Streamlit interactive visualization dashboard logic.
     """
-    st.set_page_config(page_title="WAID Public Analytics", layout="wide")
-    
-    if not Path("/mount").exists() and os.environ.get("STREAMLIT_SERVER_PORT") is None:
-        status = get_deployment_status()
-        if status == "OUTDATED":
-            st.warning("**Deploy Outdated**: Run `python waid_08_2_viz_streamlit_app.py --deploy`")
-        elif status == "MISSING":
-            st.info("**Deploy**: Deployment folder not initialized.")
 
+    st.set_page_config(page_title="WAID Public Analytics", layout="wide")
     st.title("WAID — Public Operational & Quality Monitor")
     
     df = load_public_data()
     if df.empty:
-        st.warning("Public analytics database (`waid_deploy.db`) not found or empty.")
+        st.warning("Public analytics database not found or empty.")
         return
     
     # Robust timestamp parsing with explicit UTC conversion and naive stripping for correct chart alignment
     df['ts_target'] = pd.to_datetime(df['timestamp'], errors='coerce')
     if df['ts_target'].dt.tz is not None:
         df['ts_target'] = df['ts_target'].dt.tz_convert(None)
-    
-    # Time shift to align database UTC timestamps with local sensor time
-    df['ts_target'] = df['ts_target'] + pd.Timedelta(hours=2)
 
     for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
         if f'pred_{k}' in df.columns and f'diff_{k}' in df.columns:
@@ -281,6 +361,20 @@ def main() -> int:
         if args.deploy:
             run_deployment_setup(env)
         else:
+            if not args.deploy and get_script_run_ctx() is None:
+                logger.error(
+                    "\n"
+                    "⚠️ WARNING: this script is a Streamlit application.\n"
+                    "Do not run it directly with:\n"
+                    "    python waid_08_2_viz_streamlit_app.py\n"
+                    "\n"
+                    "Run it instead with:\n"
+                    "    streamlit run waid_08_2_viz_streamlit_app.py\n"
+                    "or\n"
+                    "    ./src/waid_08_2_viz_streamlit_app.py --deploy\n"
+                )
+                return WaidExit.INTERNAL_ERROR
+            
             run_dashboard()
 
     except WError as e:

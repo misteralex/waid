@@ -33,7 +33,7 @@ services:
   dashboard:
     image: waid-app:latest
     container_name: waid_dashboard
-    command: ["python", "-m", "streamlit", "run", "src/waid_08_2_viz_streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    command: ["python", "-m", "streamlit", "run", "src/waid_08_1_viz_streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501"]
     ports:
       - "8501:8501"
     env_file:

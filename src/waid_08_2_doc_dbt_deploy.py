@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_08_3_doc_dbt_deploy.py
+@file waid_08_2_doc_dbt_deploy.py
 @brief Automated dbt documentation pipeline and Markdown report generator.
 @details Calculates an incremental hash over dbt model files to detect changes,
          triggers dbt docs generation, parses manifest.json, and outputs a 

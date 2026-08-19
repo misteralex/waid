@@ -104,7 +104,7 @@ python src/waid_07_1_inference_forecast.py
 
 ### `waid_07_2_export_deploy_db.py`
 
-To execute the ETL script that extracts operational forecasts and quality metrics from the internal lab database and deploys them to the public SQLite database (`WAID_DB_DEPLOY_FILE`), run the following command from the repository root:
+To execute the ETL script that extracts operational forecasts and quality metrics from the internal lab database and deploys them to the public SQLite database (`WAID_DEPLOY_FILE`), run the following command from the repository root:
 
 ```bash
 python src/waid_07_2_export_deploy_db.py
@@ -115,46 +115,26 @@ python src/waid_07_2_export_deploy_db.py
 
 <br>
 
-### `waid_08_1_viz_streamlit_update.py`
-
-To execute the final synchronization and deployment script (with safety controls via WAID_ENV to handle git push only in production),  run the following command from the repository root:
-
-```bash
-python src/waid_08_1_viz_streamlit_update.py
-```
-
-<br>
-
-### `waid_08_2_viz_streamlit_app.py`
+### `waid_08_1_viz_streamlit_app.py`
 
 To launch the Streamlit public analytics dashboard, which provides dedicated visualizations for all six weather features and allows for three-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics, run the following command from the repository root to launch the interactive Streamlit analytics dashboard:
 
 ```bash
-streamlit run src/waid_08_2_viz_streamlit_app.py
+streamlit run src/waid_08_1_viz_streamlit_app.py
 ```
 
 To package the application and database for external deployment:
 ```bash
-streamlit run src/waid_08_2_viz_streamlit_app.py --deploy
+streamlit run src/waid_08_1_viz_streamlit_app.py --deploy
 ```
 <br>
 
-### `waid_08_3_doc_dbt_deploy.py`
+### `waid_08_2_doc_dbt_deploy.py`
 
 To generate and deploy the automated Markdown data dictionary for dbt models within the Stage 08 pipeline, run the following command from the repository root:
 
 ```bash
-python src/waid_08_3_doc_dbt_deploy.py
-```
-
-<br>
-
-### `waid_08_4_viz_cli.py`
-
-To execute the CLI visualizer for operational forecasts (including ERA5 ground truth comparisons and drift metrics), run the following command from the repository root:
-
-```bash
-python src/waid_08_4_viz_cli.py
+python src/waid_08_2_doc_dbt_deploy.py
 ```
 
 ## dbt Commands
@@ -269,7 +249,8 @@ The following components provide supporting services for the WAID pipeline, incl
 | **`waid_orchestrate.py`** | **Core pipeline orchestrator.** Coordinates the end-to-end WAID workflow, from dbt initialization and data ingestion, profiling, and alignment through Machine Learning training and inference. Supports incremental and backfill modes, reset operations, and propagation of the `--period` parameter across pipeline stages. |
 | **`boot.py`** | **Bootstrap and configuration manager.** Loads and validates application and environment settings, configures logging through `loguru`, and validates required storage paths, SQLite databases, Ecowitt/ERA5 data directories, dbt resources, and Machine Learning tensor directories through the `WaidBoot` interface. |
 | **`waid_shared.py`** | **Shared utility library.** Provides common functions for astronomical clear-sky solar radiation calculations, extraction and cleaning of Ecowitt telemetry, resampling and bounded interpolation, and retrieval of station metadata and sensor specifications from the SQLite Feature Store. |
-| **`waid_analyze_bias.py`** | **Debugging and diagnostic utility.** Provided as a debugging and diagnostic utility within the WAID pipeline. It can be used to inspect bias-related results and perform sanity checks for a specific target period
+| **`waid_analyze_bias.py`** | **Debugging and diagnostic utility.** Provided as a debugging and diagnostic utility within the WAID pipeline. It can be used to inspect bias-related results and perform sanity checks for a specific target period. |
+| **`waid_inspect_forecast.py`** | **Debugging and diagnostic utility.** CLI visualizer for operational forecasts (including ERA5 ground truth comparisons and drift metrics). |
 
 ---
 

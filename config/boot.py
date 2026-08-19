@@ -1,5 +1,5 @@
 """
-@file config.py
+@file boot.py
 @brief Core bootstrap and configuration module for the WAID pipeline.
 @details Handles environment variable resolution, validation, logging setup, 
          and global settings classes.
@@ -13,9 +13,11 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, List, Dict, Optional
+from dataclasses import dataclass
 
 # Pre-define environment variable for Loguru colorization
 os.environ["LOGURU_COLORIZE"] = "1"
+
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -61,6 +63,47 @@ class WaidExit:
     DATA_NOT_FINALIZED = 6
     INTERNAL_ERROR = 7
 
+
+@dataclass(frozen=True)
+class DBCredentials:
+    """Immutable database configuration object."""
+
+    host: str
+    user: str
+    password: str
+    port: int
+    dbname: str
+
+
+def get_db_credentials(target: Optional[str] = None) -> DBCredentials:
+    """Retrieve database credentials based on runtime context or specific target.
+
+    Priority:
+    1. Direct injection (e.g. Docker, Cloud, CI/CD with flat WAID_DB_* variables).
+    2. Explicit target requested as function parameter (e.g., 'draft', 'prod', 'retro').
+    3. Default target defined in WAID_TARGET_ENV (fallback to 'draft').
+    """
+    # 1. Direct Cloud/Docker flat injection check
+    if os.getenv("WAID_DB_HOST"):
+        return DBCredentials(
+            host=os.getenv("WAID_DB_HOST", ""),
+            user=os.getenv("WAID_DB_USER", ""),
+            password=os.getenv("WAID_DB_PASSWORD", ""),
+            port=int(os.getenv("WAID_DB_PORT", "6543")),
+            dbname=os.getenv("WAID_DB_NAME", "postgres"),
+        )
+
+    # 2. Local Multi-Target Resolution
+    selected_target = (target or os.getenv("WAID_TARGET_ENV", "draft")).upper()
+
+    return DBCredentials(
+        host=os.getenv(f"WAID_{selected_target}_DB_HOST", ""),
+        user=os.getenv(f"WAID_{selected_target}_DB_USER", ""),
+        password=os.getenv(f"WAID_{selected_target}_DB_PASSWORD", ""),
+        port=int(os.getenv(f"WAID_{selected_target}_DB_PORT", "6543")),
+        dbname=os.getenv(f"WAID_{selected_target}_DB_NAME", "postgres"),
+    )
+    
 
 # ==============================================================================
 # ENVIRONMENT RESOLUTION HELPERS
@@ -348,7 +391,9 @@ class WaidSettings(BaseConfig):
         else:
             self.waid_db: Optional[str] = os.getenv("WAID_DB_FILE")
 
-        self.waid_db_deploy_file: Optional[str] = os.getenv("WAID_DB_DEPLOY_FILE")
+        # Deploy configuration
+        self.deploy_file: Optional[str] = os.getenv("WAID_DEPLOY_FILE")
+        self.deploy_mode: Optional[str] = os.getenv("WAID_DEPLOY_MODE", "local").lower()
         
         # Directories & Tables
         self.ecowitt_dir: Optional[Path] = self._get_path_env("WAID_ECOWITT_DIR")
@@ -419,6 +464,14 @@ class WaidSettings(BaseConfig):
 
         # Number of lookback days for historical prediction reconciliation
         self.reconciliation_cutoff_days: Optional[int] = self._get_int_env("WAID_RECONCILIATION_CUTOFF_DAYS", 6)
+
+        # Backend platform configurations (multi-target Supabase database)
+        self.dev_db_config: DBCredentials = get_db_credentials("draft")
+        self.prod_db_config: DBCredentials = get_db_credentials("prod")
+        self.retro_db_config: DBCredentials = get_db_credentials("retro")
+
+        # Fallback/Default active configuration based on WAID_TARGET_ENV or Cloud injection
+        self.active_db_config: DBCredentials = get_db_credentials()
 
         self._validate_config()
         if boot_settings.debug_mode and execution_guard("WAID_DUMP"):

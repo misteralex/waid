@@ -272,7 +272,7 @@ def waid_02_2_dbt_clean_ecowitt(runner: PipelineRunner, args: list) -> int:
         return code
 
     return runner.run_command(
-        ["dbt", "test", "--select", "stg_ecowitt", "--store-failures"] + runner.get_dbt_base_args(),
+        ["dbt", "test", "--select", "stg_ecowitt"] + runner.get_dbt_base_args(),
         context="dbt-test", period=period_val
     )
     
@@ -442,29 +442,21 @@ def waid_07_2_export_deploy_db(runner: PipelineRunner, args: list) -> int:
         cmd.extend(["--mock-now", runner.mock_now])
         
     return runner.run_command(cmd, context="Profiling")
-   
-
-def waid_08_1_viz_streamlit_update(runner: PipelineRunner, args: list) -> int:
-    """Updates and pushes public dashboard analytics data."""
-    logger.info("Updating Streamlit dashboard analytics data")
-    
-    cmd = ["python", str(runner.env.tools_dir / "waid_08_1_viz_streamlit_update.py")]
-    return runner.run_command(cmd, context="Deployment")
 
 
-def waid_08_2_viz_streamlit_app(runner: PipelineRunner, args: list) -> int:
+def waid_08_1_viz_streamlit_app(runner: PipelineRunner, args: list) -> int:
     """Updates and pushes public dashboard analytics data with deployment setup."""
     logger.info("Updating Streamlit dashboard analytics data and staging deployment package")
     
-    cmd = [ "python", str(runner.env.tools_dir / "waid_08_2_viz_streamlit_app.py"), "--deploy" ]
+    cmd = [ "python", str(runner.env.tools_dir / "waid_08_1_viz_streamlit_app.py"), "--deploy" ]
     return runner.run_command(cmd, context="Deployment")
 
 
-def waid_08_3_doc_dbt_deploy(runner: PipelineRunner, args: list) -> int:
+def waid_08_2_doc_dbt_deploy(runner: PipelineRunner, args: list) -> int:
     """Generate and deploy the automated Markdown data dictionary from dbt data models."""
     logger.info("Generate and deploy the automated Markdown data dictionary from dbt data models.")
     
-    cmd = [ "python", str(runner.env.tools_dir / "waid_08_3_doc_dbt_deploy.py") ]
+    cmd = [ "python", str(runner.env.tools_dir / "waid_08_2_doc_dbt_deploy.py") ]
     return runner.run_command(cmd, context="Deployment")
 
 
@@ -613,8 +605,11 @@ def main() -> int:
         logger.warning(f"Cannot skip Data Ingestion / Mock Update. Required path: {db_path}")
         sys.exit(runner.env.waid_exit.INPUT_FAIL)
 
+    if env.waid_sim_mode:
+        logger.warning(f"🔶 Simulation mode active. Running mock data generation using mock database ({env.waid_db})")
+        
     if parsed_args.skip_ingestion:
-        logger.warning("⚠️  Skipping data ingestion and mock update (--skip-ingestion flag active)")
+        logger.warning("🔶 Skipping data ingestion and mock update (--skip-ingestion flag active)")
     else:
         # ==============================================================================
         # SETUP MODE HANDLING (0: Regime, 1: Soft Reset, 2: Hard Reset / Purge)
@@ -705,9 +700,6 @@ def main() -> int:
             waid_01_2_ingest_era5,
             waid_01_3_profile_era5,
         ])
-
-    if env.waid_sim_mode: 
-        logger.warning(f"⏩ Simulation mode active. Running mock data generation using mock database ({env.waid_db})")
             
     data_prep_steps.extend([
         waid_02_1_sync_ecowitt,
@@ -730,9 +722,11 @@ def main() -> int:
         waid_06_5_inference_quality,
         waid_07_1_inference_forecast,
         waid_07_2_export_deploy_db,
-        waid_08_1_viz_streamlit_update,
-        waid_08_2_viz_streamlit_app,
-        waid_08_3_doc_dbt_deploy,
+    ]
+    
+    viz_steps = [
+        waid_08_1_viz_streamlit_app,
+        waid_08_2_doc_dbt_deploy,   
     ]
 
     # ==============================================================================
@@ -743,10 +737,6 @@ def main() -> int:
         incremental_args.extend(["--period", parsed_args.period])
         
     if not parsed_args.skip_ingestion:
-        #incremental_args = list(extra_passthrough_args)
-        #if parsed_args.period:
-        #    incremental_args.extend(["--period", parsed_args.period])
-                
         if parsed_args.run_mode == "backfill":
             start_p = parsed_args.begin_period or parsed_args.period
             end_p = parsed_args.end_period or parsed_args.period
@@ -777,15 +767,10 @@ def main() -> int:
             if parsed_args.period:
                 incremental_args.extend(["--period", parsed_args.period])
             """
-            full_pipeline = data_prep_steps + ml_and_inference_steps
+            full_pipeline = data_prep_steps + ml_and_inference_steps + viz_steps
             code = run_step_sequence(full_pipeline, runner, incremental_args, start_from=parsed_args.start_from)
     else:
-        logger.warning("Skipping data ingestion and preparation steps (--skip-ingestion flag active)")
-        """
-        incremental_args = list(extra_passthrough_args)
-        if parsed_args.period:
-            incremental_args.extend(["--period", parsed_args.period])
-        """
+        # Skipping data ingestion and preparation steps 
         code = run_step_sequence(ml_and_inference_steps, runner, incremental_args, start_from=parsed_args.start_from)
 
     if code == runner.env.waid_exit.SUCCESS:

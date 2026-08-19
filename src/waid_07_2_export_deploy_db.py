@@ -2,7 +2,7 @@
 
 """
 @file waid_07_2_export_deploy_db.py
-@brief ETL script to extract, transform, and export public weather data from the lab database to WAID_DB_DEPLOY_FILE using WaidBoot exit codes.
+@brief ETL script to extract, transform, and export public weather data from the lab database to local deployment DB (SQLite) and optionally sync to Supabase (Cloud mode).
 @author AF
 @date 2026
 """
@@ -14,6 +14,8 @@ import pandas as pd
 from pathlib import Path
 from loguru import logger
 import argparse
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 
 # Inject configuration path safely
 sys.path.append(
@@ -26,15 +28,71 @@ from boot import (
     validate_mock_timestamp,
 )
 
+
+def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
+    """
+    @brief Exports the prepared DataFrame directly to Supabase PostgreSQL database.
+           Ensures the target schema exists before loading data.
+    
+    @param env WaidBoot configuration object.
+    @param df Pandas DataFrame containing the public forecasts dataset.
+    """
+    logger.info("Starting sync to Supabase (Cloud Mode active)...")
+    
+    # 1. Dynamically retrieve configuration from the registry
+    db_config = env.active_db_config
+    
+    if not all([db_config.user, db_config.password, db_config.host]):
+        raise WError("Missing Supabase database credentials in environment.", code=WaidExit.CONFIG_FAIL)
+
+    # Determine target schema (fallback to WAID_TARGET_ENV or 'draft')
+    schema_name = os.getenv("WAID_TARGET_SCHEMA") or os.getenv("WAID_TARGET_ENV", "draft").lower()
+
+    supabase_url = (
+        f"postgresql+psycopg2://{db_config.user}:{db_config.password}"
+        f"@{db_config.host}:{db_config.port}/{db_config.dbname}?sslmode=require"
+    )
+    
+    try:
+        engine = create_engine(supabase_url, poolclass=NullPool)
+        
+        # 2. Automatically create target schema if it does not exist
+        with engine.connect() as conn:
+            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name};"))
+            conn.commit()
+            logger.info(f"Target schema '{schema_name}' verified/created on Supabase.")
+        
+        # 3. Upload DataFrame into the target schema
+        df.to_sql(
+            "public_forecasts", 
+            engine, 
+            schema=schema_name, 
+            if_exists="replace", 
+            index=False
+        )
+        
+        # 4. Create performance index in the target schema
+        with engine.connect() as conn:
+            conn.execute(
+                text(f"CREATE INDEX IF NOT EXISTS idx_public_forecasts_ts_model ON {schema_name}.public_forecasts (timestamp, model_version)")
+            )
+            conn.commit()
+            
+        logger.success(f"Supabase database ({schema_name}.public_forecasts) successfully updated and indexed.")
+    except Exception as e:
+        logger.error(f"Failed to write to Supabase database: {e}")
+        raise WError(f"Supabase synchronization failed: {e}", code=WaidExit.DATA_FAIL)
+
+
 def main() -> int:
     """
-    Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE.
+    @brief Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE.
+           Optionally synchronizes data with Supabase if WAID_DEPLOY_MODE is set to 'cloud'.
     
-    Returns:
-        int: Process exit status code.
+    @return int Process exit status code.
     """
     try:
-        parser = argparse.ArgumentParser(description="WAID Inference Engine")
+        parser = argparse.ArgumentParser(description="WAID Inference Engine & DB Exporter")
         parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
         args, _ = parser.parse_known_args()
         
@@ -43,12 +101,16 @@ def main() -> int:
         if args.mock_now:
             env.mock_now = validate_mock_timestamp(args.mock_now)
             logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+        
+        logger.info(f"🔶 Environment : {getattr(env, 'env_name', os.getenv('WAID_ENV', 'unknown'))}")
+        logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
+        logger.info(f"🔶 DB Target   : {getattr(env, 'target_env', os.getenv('WAID_TARGET_ENV', 'draft'))}")
             
         waid_db_dir = Path(env.waid_db)
         
         # Resolve public db path with strict check
-        if hasattr(env, 'waid_db_deploy_file') and env.waid_data_dir:
-            public_db_path = Path(env.waid_data_dir) / env.waid_db_deploy_file
+        if hasattr(env, 'deploy_file') and env.deploy_dir:
+            public_db_path = Path(env.deploy_dir) / "data" / env.deploy_file
         else:
             raise WError("Missing required configuration: WAID_DB_DEPLOY_FILE or WAID_DATA_DIR is not defined.", code=WaidExit.CONFIG_FAIL)
     except Exception as e:
@@ -89,25 +151,36 @@ def main() -> int:
 
     if df.empty:
         logger.warning("No records found in the lab database to export.")
-        return WaidExit.DATA_FAIL
+        return WaidExit.DATA_FAILED if 'DATA_FAILED' in dir(WaidExit) else WaidExit.DATA_FAIL
 
     logger.info(f"Extracted {len(df)} records. Preparing public database export...")
 
+    # Step 1: Always update local deployment SQLite database
     public_db_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         with sqlite3.connect(public_db_path) as dest_conn:
             df.to_sql("public_forecasts", dest_conn, if_exists="replace", index=False)
-            
+        
             # Create an index on the exported table to reflect the composite key and optimize public queries
             cursor = dest_conn.cursor()
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_public_forecasts_ts_model ON public_forecasts (timestamp, model_version)")
             dest_conn.commit()
 
-        logger.success(f"Public database successfully updated at: {public_db_path}")
+        logger.success(f"Local public database successfully updated at: {public_db_path}")
     except Exception as e:
-        logger.error(f"Failed to write to public database: {e}")
+        logger.error(f"Failed to write to local public database: {e}")
         return WaidExit.DATA_FAIL
+
+    # Step 2: If WAID_DEPLOY_MODE is 'cloud', also sync to Supabase 
+    if env.deploy_mode == "cloud":
+        try:
+            export_to_supabase(env, df)
+        except WError as e:
+            return e.code
+        except Exception as e:
+            logger.error(f"Unexpected error during Supabase export: {e}")
+            return WaidExit.DATA_FAIL
 
     return WaidExit.SUCCESS
 

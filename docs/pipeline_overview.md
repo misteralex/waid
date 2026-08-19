@@ -19,8 +19,8 @@ The orchestration chain follows a modular, end-to-end data engineering and machi
 
 **4. Deployment & Visualization**
 
-* **Execution:** `waid_07_2_export_deploy_db` $\rightarrow$ `waid_08_1_viz_streamlit_update` $\rightarrow$ `waid_08_2_viz_streamlit_app`
-* **Purpose:** Exports the processed metrics, forecasts, and predictions into a lightweight deployment database. Triggers an update to the visualization state and launches the Streamlit dashboard UI for user interaction.
+* **Execution:** `waid_07_2_export_deploy_db` $\rightarrow$ `waid_08_1_viz_streamlit_app.py` $\rightarrow$ `waid_08_2_doc_dbt_deploy.py`
+* **Purpose:** Exports the processed metrics, forecasts, and predictions into a lightweight deployment database. Triggers an update to the visualization state and launches the Streamlit dashboard UI for user interaction. Generates and synchronizes dbt-compatible schema documentation and data lineage artifacts for the persistent deployment database.
 
 ---
 

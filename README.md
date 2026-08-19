@@ -10,15 +10,15 @@ By combining temporal resampling, spatial feature extraction, and residual deep 
 
 The live demonstration and operational dashboard of the WAID framework is hosted on Streamlit Cloud:
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://waid--analytics.streamlit.app/)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://waid-analytics.streamlit.app/)
 
-> **Live Web App**: <https://waid--analytics.streamlit.app/>
+> **Live Web App**: <https://waid-analytics.streamlit.app/>
 
 ### 🚀 Public Access & Deployment Overview
 ```text
 +-----------------------------------------------------------------------+
 |                         WAID LIVE DEMO                                |
-|             https://waid--analytics.streamlit.app/                    |
+|             https://waid-analytics.streamlit.app/                    |
 +-----------------------------------------------------------------------+
 |  • Operational Nowcasting UI: Live predictions vs Ecowitt vs ERA5     |
 |  • Isolated Deployment DB: Syncs via Stage 08 ETL export pipeline     |
@@ -74,6 +74,66 @@ Generate a physics-constrained 6-hour operational forecast, persist it as an aud
 Transforms operational forecast outputs into a lightweight, deployable data product for reporting, visualization, and external consumption.
 
 → export → dbt transformations → deployment database → CLI reporting / Streamlit
+
+---
+
+## 🚀 Deployment & Data Routing Architecture
+
+The WAID platform supports flexible deployment options across different environments and storage backends, seamlessly routing between local offline databases and cloud-hosted data warehouses.
+
+### Supported Deployment Scenarios
+
+| Scenario | Target Platform | Storage Backend | Core Environment Variables | Primary Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Local Bare-Metal / Dev** | Host PC | Local SQLite (`waid_deploy.db`) | `WAID_DEPLOY_MODE=local` | Rapid testing, offline analysis, script debugging. |
+| **2. Containerized PC (Docker)** | Host PC (x86_64) | Remote PostgreSQL (Supabase) | `WAID_DEPLOY_MODE=cloud`<br>`WAID_TARGET_ENV=draft/prod` | Local containerized production environment & simulation. |
+| **3. Edge Deployment (Raspberry Pi)** | ARM64 Board | Hybrid (SQLite / Supabase) | `WAID_PLATFORM=board`<br>`WAID_DEPLOY_MODE=cloud` | Low-power edge node for sensor data gathering and sync. |
+
+---
+
+### Execution Guides
+
+#### 1. Local Development (SQLite Target)
+Runs directly on the host using the pre-packaged SQLite deployment file:
+
+```bash
+streamlit run src/waid_08_1_viz_streamlit_app.py
+```
+
+#### 2. PC Docker Production (Supabase Cloud Target)
+Runs inside an x86_64 container connected to the live Supabase PostgreSQL instance.
+
+##### Environment Setup (`config/waid.env`):
+```bash
+WAID_DEPLOY_MODE=cloud
+WAID_TARGET_ENV=prod
+WAID_DB_HOST=db.xxxxxxxxxxxx.supabase.co
+WAID_DB_USER=postgres
+WAID_DB_PASSWORD=your_supabase_password
+WAID_DB_PORT=6543
+WAID_DB_NAME=postgres
+```
+
+##### Docker Launch Command:
+```bash
+docker run -d \
+  --name waid-analytics-app \
+  -p 8501:8501 \
+  --env-file config/waid.env \
+  waid-streamlit-app:latest
+```
+
+##### Dynamic CLI Override Example:
+```bash
+WAID_DEPLOY_MODE=cloud WAID_TARGET_ENV=draft streamlit run src/waid_08_1_viz_streamlit_app.py
+```
+
+#### 3. Edge Deployment Strategy (ARM Edge Boards)
+When executing in edge environments (`WAID_PLATFORM=board`), resource constraints and potential network interruptions are handled gracefully:
+* Storage Resilience: Local SQLite buffers incoming data if cloud connectivity drops, avoiding operational data loss.
+* Architecture-Agnostic Build: Fully compatible with ARM64 container targets via multi-arch Docker builds (`docker buildx`).
+* Multi-Schema Target Pointers: Directly syncs verified analytical records into **draft**, **prod**, or **retro** schemas in Supabase upon connection re-establishment.
+
 
 ---
 
@@ -167,16 +227,9 @@ The framework is organized into modular steps and orchestration utilities spanni
 ### Stage 07 & 08: Forecasting & Visualization
 
 * **`waid_07_1_inference_forecast.py`**: Manages the 6-hour forecasting pipeline, enforcing physics-safe guardrails and hardware quantization, and logging multi-step forecasts, actuals, historical biases, and drifts.
-* **`waid_07_2_export_deploy_db.py`**: Executes an ETL pipeline that extracts operational weather forecasts and quality metrics from the internal lab database, consolidates the data via a left join, and exports it into an isolated SQLite database (`WAID_DB_DEPLOY_FILE`) for public dissemination.
-* **`waid_08_1_viz_streamlit_update.py`**: It acts as the final synchronization and deployment script (with safety controls via `WAID_ENV` to handle git push only in production), placing itself consistently at the end of the orchestration pipeline.
-* **`waid_08_2_viz_streamlit.py`**: Provides a Streamlit-based analytics dashboard that monitors operational weather performance, including 3-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics.
-* **`waid_08_3_viz_cli.py`**: To execute the CLI visualizer for operational forecasts (including ERA5 ground truth comparisons and drift metrics), run the following command from the repository root:
-```bash
-python src/waid_08_3_viz_cli.py
-
-```
-
-
+* **`waid_07_2_export_deploy_db.py`**: Executes an ETL pipeline that extracts operational weather forecasts and quality metrics from the internal lab database, consolidates the data via a left join, and exports it into an isolated SQLite database (`WAID_DEPLOY_FILE`) for public dissemination.
+* **`waid_08_1_viz_streamlit_app.py`**: Provides a Streamlit-based analytics dashboard that monitors operational weather performance, including 3-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics.
+* **`waid_08_2_doc_dbt_deploy.py`**: Generate and deploy an automated Markdown data dictionary from current dbt data models.
 
 ---
 

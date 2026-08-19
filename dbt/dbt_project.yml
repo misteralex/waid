@@ -35,6 +35,11 @@ models:
     staging:
           +materialized: view
 
+# Configuring tests
+tests:
+  waid:
+    +store_failures: false
+
 vars:
   max_bias_temp: "{{ env_var('WAID_ML_BIAS_TEMP', '5.0') }}"
   max_bias_pres: "{{ env_var('WAID_ML_BIAS_PRES', '10.0') }}"

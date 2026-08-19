@@ -127,6 +127,15 @@ def main() -> int:
                     
                     # Advance by the configured interval
                     current_dt += timedelta(hours=env.mock_interval_hours)
+
+                # Publication step at simulation end
+                logger.info("Executing final publication step (waid_08_1_viz_streamlit_app)...")
+                pub_code = run_pipeline("incremental", extra_args=["--start-from", "waid_08_1_viz_streamlit_app", "--skip-setup"])                
+                if pub_code == 0:
+                    logger.success("Final publication step completed successfully.")
+                else:
+                    logger.error(f"Publication step failed with code {pub_code}")
+
             finally:
                 # Cleanup environment variables after simulation completion
                 os.environ.pop("WAID_MOCK_NOW", None)
