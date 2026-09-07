@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_07_2_export_deploy_db.py
+@file waid_07_1_export_deploy_db.py
 @brief ETL script to extract, transform, and export public weather data from the lab database to local deployment DB (SQLite) and optionally sync to Supabase (Cloud mode).
 @author AF
 @date 2026
@@ -45,13 +45,16 @@ def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
     if not all([db_config.user, db_config.password, db_config.host]):
         raise WError("Missing Supabase database credentials in environment.", code=WaidExit.CONFIG_FAIL)
 
-    # Determine target schema (fallback to WAID_TARGET_ENV or 'draft')
-    schema_name = os.getenv("WAID_TARGET_SCHEMA") or os.getenv("WAID_TARGET_ENV", "draft").lower()
-
+    # Determine target schema (fallback to WAID_DB_SCHEMA_TARGET or 'draft')
+    schema_name = env.db_schema_target.lower()
+    
     supabase_url = (
         f"postgresql+psycopg2://{db_config.user}:{db_config.password}"
         f"@{db_config.host}:{db_config.port}/{db_config.dbname}?sslmode=require"
     )
+    logger.info(f"Current Supabase target schema name: {schema_name}")
+    safe_url = supabase_url.replace(db_config.password, "********")
+    logger.debug(f"Connecting to Supabase with URL: {safe_url}")
     
     try:
         engine = create_engine(supabase_url, poolclass=NullPool)
@@ -102,17 +105,17 @@ def main() -> int:
             env.mock_now = validate_mock_timestamp(args.mock_now)
             logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
         
-        logger.info(f"🔶 Environment : {getattr(env, 'env_name', os.getenv('WAID_ENV', 'unknown'))}")
         logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
-        logger.info(f"🔶 DB Target   : {getattr(env, 'target_env', os.getenv('WAID_TARGET_ENV', 'draft'))}")
+        logger.info(f"🔶 DB Target   : {env.db_schema_target}")
             
         waid_db_dir = Path(env.waid_db)
-        
+         
         # Resolve public db path with strict check
-        if hasattr(env, 'deploy_file') and env.deploy_dir:
-            public_db_path = Path(env.deploy_dir) / "data" / env.deploy_file
+        if hasattr(env, 'deploy_db_file') and env.waid_data_dir:
+            waid_db_deploy_path = Path(env.waid_data_dir / env.deploy_db_file)
         else:
-            raise WError("Missing required configuration: WAID_DB_DEPLOY_FILE or WAID_DATA_DIR is not defined.", code=WaidExit.CONFIG_FAIL)
+            raise WError("Required configuration is missing or does not match the expected contents.", code=WaidExit.CONFIG_FAIL)
+        
     except Exception as e:
         logger.error(f"Failed to initialize WaidBoot configuration: {e}")
         return WaidExit.CONFIG_FAIL
@@ -125,21 +128,61 @@ def main() -> int:
     
     # Updated the query to correctly handle the composite key (timestamp, model_version)
     query = """
-        SELECT 
-            t.timestamp, 
-            t.created_at, 
+        SELECT
+            t.timestamp,
+            t.created_at,
             t.model_version,
-            t.pred_temp, t.pred_rh, t.pred_pres, t.pred_wind, t.pred_rain, t.pred_solar,
-            t.diff_temp, t.diff_rh, t.diff_pres, t.diff_wind, t.diff_rain, t.diff_solar,
-            t.historical_bias_temp, t.historical_bias_rh, t.historical_bias_pres, 
-            t.historical_bias_wind, t.historical_bias_rain, t.historical_bias_solar,
-            t.drift_vs_bias_temp, t.drift_vs_bias_rh, t.drift_vs_bias_pres, 
-            t.drift_vs_bias_wind, t.drift_vs_bias_rain, t.drift_vs_bias_solar,
-            q.temp_era5, q.rh_era5, q.pres_era5, q.wind_era5, q.rain_era5, q.solar_era5,
-            q.abs_error_temp, q.abs_error_rh, q.abs_error_pres, q.abs_error_wind, q.abs_error_rain, q.abs_error_solar
-        FROM inference_forecast t
-        LEFT JOIN inference_quality q ON t.timestamp = q.timestamp
-        ORDER BY t.timestamp ASC, t.model_version ASC
+
+            t.pred_temp,
+            t.pred_rh,
+            t.pred_pres,
+            t.pred_wind,
+            t.pred_rain,
+            t.pred_solar,
+
+            t.diff_temp,
+            t.diff_rh,
+            t.diff_pres,
+            t.diff_wind,
+            t.diff_rain,
+            t.diff_solar,
+
+            t.historical_bias_temp,
+            t.historical_bias_rh,
+            t.historical_bias_pres,
+            t.historical_bias_wind,
+            t.historical_bias_rain,
+            t.historical_bias_solar,
+
+            t.drift_vs_bias_temp,
+            t.drift_vs_bias_rh,
+            t.drift_vs_bias_pres,
+            t.drift_vs_bias_wind,
+            t.drift_vs_bias_rain,
+            t.drift_vs_bias_solar,
+
+            q.temp_era5,
+            q.rh_era5,
+            q.pres_era5,
+            q.wind_era5,
+            q.rain_era5,
+            q.solar_era5,
+
+            q.abs_error_temp,
+            q.abs_error_rh,
+            q.abs_error_pres,
+            q.abs_error_wind,
+            q.abs_error_rain,
+            q.abs_error_solar
+
+        FROM inference_forecast AS t
+        LEFT JOIN inference_quality AS q
+            ON t.timestamp = q.timestamp
+        AND t.model_version = q.model_version
+
+        ORDER BY
+            t.timestamp ASC,
+            t.model_version ASC
     """
 
     try:
@@ -156,10 +199,10 @@ def main() -> int:
     logger.info(f"Extracted {len(df)} records. Preparing public database export...")
 
     # Step 1: Always update local deployment SQLite database
-    public_db_path.parent.mkdir(parents=True, exist_ok=True)
+    waid_db_deploy_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        with sqlite3.connect(public_db_path) as dest_conn:
+        with sqlite3.connect(waid_db_deploy_path) as dest_conn:
             df.to_sql("public_forecasts", dest_conn, if_exists="replace", index=False)
         
             # Create an index on the exported table to reflect the composite key and optimize public queries
@@ -167,7 +210,7 @@ def main() -> int:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_public_forecasts_ts_model ON public_forecasts (timestamp, model_version)")
             dest_conn.commit()
 
-        logger.success(f"Local public database successfully updated at: {public_db_path}")
+        logger.success(f"Local public database successfully updated at: {waid_db_deploy_path}")
     except Exception as e:
         logger.error(f"Failed to write to local public database: {e}")
         return WaidExit.DATA_FAIL

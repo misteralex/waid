@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_06_5_inference_quality.py
+@file waid_06_4_inference_quality.py
 @brief WAID Quality Check Script.
 @details Validates inference records and quality metrics in the SQLite database.
 @author AF
@@ -44,26 +44,14 @@ def main() -> int:
         conn = sqlite3.connect(env.waid_db)
         cursor = conn.cursor()
 
-        # Verify existence of inference tables and check record counts
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='inference_records';")
-        if not cursor.fetchone():
-            logger.error("Table 'inference_records' does not exist in the database.")
-            conn.close()
-            return env.waid_exit.DATA_FAIL
-        
-        cursor.execute("SELECT COUNT(*) FROM inference_records;")
-        total_records = cursor.fetchone()[0]
-        logger.info(f"Total inference records found: {total_records}")
-
-        if total_records == 0:
-            logger.warning("Inference records table is empty.")
-
-        # Optional check on quality view/table if present
+        # Check quality benchmark table/view (inference_quality)
         cursor.execute("SELECT name FROM sqlite_master WHERE type in ('table', 'view') AND name='inference_quality';")
         if cursor.fetchone():
             cursor.execute("SELECT COUNT(*) FROM inference_quality;")
             quality_count = cursor.fetchone()[0]
             logger.info(f"Total quality benchmark records found: {quality_count}")
+        else:
+            logger.warning("Table/View 'inference_quality' does not exist in the database.")
 
         conn.close()
         logger.success("Quality check completed successfully.")

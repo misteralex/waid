@@ -3,6 +3,8 @@
 @brief Core bootstrap and configuration module for the WAID pipeline.
 @details Handles environment variable resolution, validation, logging setup, 
          and global settings classes.
+@author AF
+@date 2026
 """
 
 import os
@@ -10,16 +12,61 @@ import sys
 import shutil
 import pprint
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
+import streamlit as st
+
+
+# ==============================================================================
+# Log management section
+# ==============================================================================
 
 # Pre-define environment variable for Loguru colorization
 os.environ["LOGURU_COLORIZE"] = "1"
 
 from dotenv import load_dotenv
 from loguru import logger
+
+
+# Direct read log variable to set up the required level or fallback to default 'INFO' 
+current_log_level = os.getenv("WAID_LOG_LEVEL", "INFO").upper()
+current_log_dir = Path(os.getenv("WAID_LOG_DIR", "INFO"))
+current_config_dir = Path(os.getenv("WAID_CONFIG_DIR", "config"))
+
+# Protection against double initialization (executed once per process)
+if not getattr(logger, "_waid_initialized", False):
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level=current_log_level,
+        colorize=True,
+        format="<level>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:8} | {file.name}:{function}:{line} | {message}</level>"
+    )
+
+    if current_log_dir:
+        current_log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_path = current_log_dir / f"waid_pipeline_{datetime.now().strftime('%Y%m%d')}.log"
+        logger.add(
+            str(log_file_path),
+            level=current_log_level,
+            colorize=False,
+            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:8} | {file.name}:{function}:{line} | {message}"
+        )
+
+    logger._waid_initialized = True
+
+
+# Start new log cycle for each entrypoint script execution
+caller_script = Path(sys.argv[0]).name
+ENTRYPOINT_SCRIPTS = {"waid_scheduler_lab.py", "waid_orchestrate_lab.py"}
+if caller_script in ENTRYPOINT_SCRIPTS:
+    logger.info("=" * 90)
+    logger.info(f">>> NEW WAID PIPELINE CYCLE STARTED | Entrypoint: {caller_script}")
+    logger.info("=" * 90)
+else:
+    logger.info(f"--- Booting module context: {caller_script} ---")
 
 
 # ==============================================================================
@@ -66,7 +113,9 @@ class WaidExit:
 
 @dataclass(frozen=True)
 class DBCredentials:
-    """Immutable database configuration object."""
+    """
+    @brief Immutable database configuration object.
+    """
 
     host: str
     user: str
@@ -75,35 +124,44 @@ class DBCredentials:
     dbname: str
 
 
-def get_db_credentials(target: Optional[str] = None) -> DBCredentials:
-    """Retrieve database credentials based on runtime context or specific target.
-
-    Priority:
-    1. Direct injection (e.g. Docker, Cloud, CI/CD with flat WAID_DB_* variables).
-    2. Explicit target requested as function parameter (e.g., 'draft', 'prod', 'retro').
-    3. Default target defined in WAID_TARGET_ENV (fallback to 'draft').
+def get_env_with_fallback(name: str, default: Any, var_type: type = str) -> Any:
     """
-    # 1. Direct Cloud/Docker flat injection check
-    if os.getenv("WAID_DB_HOST"):
-        return DBCredentials(
-            host=os.getenv("WAID_DB_HOST", ""),
-            user=os.getenv("WAID_DB_USER", ""),
-            password=os.getenv("WAID_DB_PASSWORD", ""),
-            port=int(os.getenv("WAID_DB_PORT", "6543")),
-            dbname=os.getenv("WAID_DB_NAME", "postgres"),
-        )
+    @brief Retrieves environment variable with logging and fallback mechanism.
+    
+    @param name Environment variable name.
+    @param default Fallback value if missing or empty.
+    @param var_type Expected output datatype for casting.
+    @return Parsed environment value or fallback.
+    """
+    val = os.getenv(name)
+    if val is None or not str(val).strip():
+        logger.warning(f"[CONFIG_FALLBACK] {name} is missing or empty. Using default fallback: {default}")
+        return default
 
-    # 2. Local Multi-Target Resolution
-    selected_target = (target or os.getenv("WAID_TARGET_ENV", "draft")).upper()
+    try:
+        return var_type(val)
+    except ValueError:
+        logger.warning(f"[CONFIG_FALLBACK] Failed to parse {name} as {var_type.__name__}. Using default fallback: {default}")
+        return default
+
+
+def get_db_credentials(target: str) -> DBCredentials:
+    """
+    @brief Retrieve database credentials based on explicit target resolution.
+    
+    @param target Database target scope (e.g., 'draft', 'prod', 'retro').
+    @return DBCredentials instance.
+    """
+    t = target.upper()
 
     return DBCredentials(
-        host=os.getenv(f"WAID_{selected_target}_DB_HOST", ""),
-        user=os.getenv(f"WAID_{selected_target}_DB_USER", ""),
-        password=os.getenv(f"WAID_{selected_target}_DB_PASSWORD", ""),
-        port=int(os.getenv(f"WAID_{selected_target}_DB_PORT", "6543")),
-        dbname=os.getenv(f"WAID_{selected_target}_DB_NAME", "postgres"),
+        host=get_env_with_fallback(f"WAID_{t}_DB_HOST", "host_placeholder", var_type=str),
+        user=get_env_with_fallback(f"WAID_{t}_DB_USER", "user_placeholder", var_type=str),
+        password=get_env_with_fallback(f"WAID_{t}_DB_PASSWORD", "password_placeholder", var_type=str),
+        port=get_env_with_fallback(f"WAID_{t}_DB_PORT", "6543", var_type=str),
+        dbname=get_env_with_fallback(f"WAID_{t}_DB_NAME", "postgres", var_type=str),
     )
-    
+
 
 # ==============================================================================
 # ENVIRONMENT RESOLUTION HELPERS
@@ -142,9 +200,9 @@ def execution_guard(guard_name: str) -> bool:
 waid_source = os.environ.get("WAID_SOURCE")
 if not waid_source:
     logger.error("[CRITICAL] WAID_SOURCE environment variable is not defined or empty!", file=sys.stderr)
-    logger.error("   Please initialize your environment first using './config/boot.env'.\n", file=sys.stderr)
+    logger.error("Please initialize your environment first using './config/boot.env'.\n", file=sys.stderr)
     sys.exit(WaidExit.CONFIG_FAIL)
-
+    
 # Load base environment file
 SCRIPT_DIR = Path(__file__).parent.resolve()
 load_dotenv(dotenv_path=SCRIPT_DIR / "boot.env", override=True)
@@ -174,10 +232,33 @@ WAID_ENV_FILE = config_dir / "waid.env"
 if WAID_ENV_FILE.exists():
     load_dotenv(dotenv_path=WAID_ENV_FILE, override=True)
     _expand_environment_variables(iterations=2)
+    
+    # Re-apply log level after reading waid.env
+    updated_log_level = os.getenv("WAID_LOG_LEVEL", "INFO").upper()
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level=updated_log_level,
+        colorize=True,
+        format="<level>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:8} | {file.name}:{function}:{line} | {message}</level>"
+    )
 else:
     logger.critical(f"[!] Critical: WAID Configuration file not found at {WAID_ENV_FILE}")
     sys.exit(WaidExit.INPUT_FAIL)
 
+# ==============================================================================
+# STREAMLIT SECRETS INTEGRATION
+# ==============================================================================
+try:
+    logger.debug("Try to process Streamlit secrets...")
+    if hasattr(st, "secrets") and len(st.secrets) > 0:
+        for key, value in st.secrets.items():
+            if isinstance(value, str):
+                os.environ[key] = value
+    logger.success("Streamlit secrets successfully loaded")
+except Exception:
+    logger.debug("Not running under Streamlit or no secrets found...")
+    pass
 
 # ==============================================================================
 # CONFIGURATION BASE & SETTINGS CLASSES
@@ -224,9 +305,12 @@ class BaseConfig:
         class_name = self.__class__.__name__
         logger.debug(f"=== [DEBUG] {class_name} COMPLETE CONFIG ===")
         for key, value in self.__dict__.items():
-            if hasattr(value, "__dict__"):
+            if key.lower() == "password":
+                logger.debug(f"  {key}: ********")
+            elif hasattr(value, "__dict__"):
                 logger.debug(f"[{key.upper()} SECTION]:")
-                pprint.pprint(value.__dict__, indent=8)
+                safe_dict = {k: ("********" if "password" in k.lower() else v) for k, v in value.__dict__.items()}
+                logger.debug(safe_dict)
             else:
                 logger.debug(f"  {key}: {value}")
 
@@ -265,12 +349,15 @@ class BaseConfig:
         @brief Retrieves a float value from environment variables.
         
         @param name Environment variable name.
-        @param default Fallback value if parsing fails or variable is missing.
+        @param default Fallback value if parsing fails, variable is missing, or empty.
         @return Parsed float value or default fallback.
         """
         value = os.getenv(name)
-        if value is None:
+        
+        # If the variable does not exist OR is an empty string (e.g. WAID_THRESHOLD=)
+        if not value or not value.strip():
             return default
+            
         try:
             return float(value)
         except ValueError:
@@ -295,6 +382,15 @@ class BootSettings(BaseConfig):
         self._validate_config()
         if self.debug_mode and execution_guard("BOOT_DUMP"):
             self.dump()
+        
+        # Check current WAID_SETUP_MODE environment variable 
+        waid_setup_mode = os.getenv("WAID_SETUP_MODE")
+        if not waid_setup_mode or not waid_setup_mode.strip():
+            waid_setup_mode = "0"
+            logger.debug(f"[CONFIG_FALLBACK] WAID_SETUP_MODE is missing or empty. Using default fallback: {waid_setup_mode}")
+        else:
+            logger.warning(f"Using required fallback WAID_SETUP_MODE: {waid_setup_mode}")
+        self.setup_mode = int(waid_setup_mode.strip() or 0)
 
 
 class WaidSettings(BaseConfig):
@@ -364,7 +460,7 @@ class WaidSettings(BaseConfig):
     ]
     ML_INPUT_FEATURES = ([f["ecowitt_field"] for f in ML_OUTPUT_FEATURES] + ML_AUXILIARY_FEATURES)
     ML_INPUT_FEATURES_MATCH = ([f["ecowitt_match"] for f in ML_OUTPUT_FEATURES] + ML_AUXILIARY_FEATURES)
-    
+
     def __init__(self, boot_settings: BootSettings) -> None:
         """
         @brief Initializes pipeline-level settings and model features based on boot settings.
@@ -374,6 +470,7 @@ class WaidSettings(BaseConfig):
         self.config_dir: Optional[Path] = self._get_path_env("WAID_CONFIG_DIR")
         self.log_dir: Optional[Path] = self._get_path_env("WAID_LOG_DIR")
         self.deploy_dir: Optional[Path] = self._get_path_env("WAID_DEPLOY_DIR")
+        self.docs_dir: Optional[Path] = self._get_path_env("WAID_DOCS_DIR")
         self.version: Optional[str] = os.getenv("WAID_VERSION")
         self.tools_dir: Optional[Path] = self._get_path_env("WAID_TOOLS_DIR")
         
@@ -388,12 +485,13 @@ class WaidSettings(BaseConfig):
         self.waid_sim_mode: bool = os.getenv("WAID_SIM_MODE", "false").lower() == "true"
         if self.waid_sim_mode:
             self.waid_db: Optional[str] = os.getenv("WAID_DB_MOCK_FILE")
+            self.deploy_db_file: Optional[str] = os.getenv("WAID_DEPLOY_MOCK_FILE")
         else:
             self.waid_db: Optional[str] = os.getenv("WAID_DB_FILE")
+            self.deploy_db_file: Optional[str] = os.getenv("WAID_DEPLOY_FILE")
 
         # Deploy configuration
-        self.deploy_file: Optional[str] = os.getenv("WAID_DEPLOY_FILE")
-        self.deploy_mode: Optional[str] = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+        self.deploy_mode: Optional[str] = get_env_with_fallback("WAID_DEPLOY_MODE", "local", var_type=str).lower()
         
         # Directories & Tables
         self.ecowitt_dir: Optional[Path] = self._get_path_env("WAID_ECOWITT_DIR")
@@ -401,29 +499,31 @@ class WaidSettings(BaseConfig):
         self.era5_data_dir: Optional[Path] = self._get_path_env("WAID_ERA5_DATA_DIR")
         self.dbt_dir: Optional[Path] = self._get_path_env("WAID_DBT_DIR")
         self.dbt_profiles_dir: Optional[Path] = self._get_path_env("WAID_DBT_PROFILES_DIR")
+        self.dbt_bin = Path(os.getenv("WAID_SOURCE")) / ".venv-dbt" / "bin" / "dbt"
         
         # Ecowitt Gateway Configurations
-        self.ecowitt_gw_ip: Optional[str] = os.getenv("WAID_ECOWITT_GW_IP")
+        self.ecowitt_gw_ip: Optional[str] = get_env_with_fallback("WAID_ECOWITT_GW_IP", "192.168.1.100", var_type=str)
         self.ecowitt_gw_port: Optional[int] = self._get_int_env("WAID_ECOWITT_GW_PORT")
         self.ecowitt_gw_timeout_sec: Optional[int] = self._get_int_env("WAID_ECOWITT_GW_TIMEOUT_SEC", 10)
         
-        # Ecowitt API Credentials & Station Specs
-        self.ecowitt_station_id: Optional[str] = os.getenv("WAID_ECOWITT_STATION_ID")
-        self.ecowitt_station_name: Optional[str] = os.getenv("WAID_ECOWITT_STATION_NAME")
-        self.ecowitt_api_key: Optional[str] = os.getenv("WAID_ECOWITT_API_KEY")
-        self.ecowitt_application_key: Optional[str] = os.getenv("WAID_ECOWITT_APPLICATION_KEY")
+        # Ecowitt Station Specs
+        self.ecowitt_station_id: Optional[str] = get_env_with_fallback("WAID_ECOWITT_STATION_ID", "STATION_01", var_type=str)
+        self.ecowitt_station_name: Optional[str] = get_env_with_fallback("WAID_ECOWITT_STATION_NAME", "Local Home Weather Station", var_type=str)
+        self.ecowitt_latitude = get_env_with_fallback("WAID_ECOWITT_LATITUDE", 41.9028, var_type=float)
+        self.ecowitt_longitude: float = get_env_with_fallback("WAID_ECOWITT_LONGITUDE", 12.4964, var_type=float)
+        self.ecowitt_elevation_m: Optional[float] = get_env_with_fallback("WAID_ECOWITT_ELEVATION_M", 20.0, var_type=float)
+        self.ecowitt_floor: Optional[float] = get_env_with_fallback("WAID_ECOWITT_FLOOR", 2, var_type=int)
         
-        self.ecowitt_latitude: Optional[float] = self._get_float_env("WAID_ECOWITT_LATITUDE")
-        self.ecowitt_longitude: Optional[float] = self._get_float_env("WAID_ECOWITT_LONGITUDE")
-        self.ecowitt_elevation_m: Optional[float] = self._get_float_env("WAID_ECOWITT_ELEVATION_M")
-        self.ecowitt_floor: Optional[float] = self._get_float_env("WAID_ECOWITT_FLOOR")
-        self.tz_timezone: str = self._validate_timezone(os.getenv("WAID_TIMEZONE", "Europe/Rome"))
+        # Retrieve the variable and apply the fallback if it is None, empty, or whitespace only
+        raw_tz = get_env_with_fallback("WAID_TIMEZONE", "Europe/Rome", var_type=str)
+        self.tz_timezone = self._validate_timezone(raw_tz)
+        
         self.resample_interval_min: Optional[int] = self._get_int_env("WAID_RESAMPLE_INTERVAL_MIN", 60)
         self.max_interpolate_hours: Optional[int] = self._get_int_env("WAID_MAX_INTERPOLATE_HOURS", 2) 
         
         # External Services (ERA5, Services ports)
         self.era5_api_url: Optional[str] = os.getenv("WAID_ERA5_API_URL")
-        self.era5_api_key: Optional[str] = os.getenv("WAID_ERA5_API_KEY")
+        self.era5_api_key: str = get_env_with_fallback("WAID_ERA5_API_KEY", "placeholder_era5_key", var_type=str)
         
         # Forecasting & Lookback Parameters
         self.forecast_horizon_hours: Optional[int] = self._get_int_env("WAID_FORECAST_HORIZON_HOURS")
@@ -457,21 +557,32 @@ class WaidSettings(BaseConfig):
 
         # Configuration scheduler settings
         self.scheduled_interval_sec: Optional[int] = self._get_int_env("SCHEDULER_INTERVAL_SEC", 3600)
-        self.backfill_begin_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_BEGIN_PERIOD"))
-        self.backfill_end_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_END_PERIOD"))
+        
+        # 1. Backfill opzionali -> allow_none=True
+        self.backfill_begin_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_BEGIN_PERIOD"), allow_none=True)
+        self.backfill_end_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_END_PERIOD"), allow_none=True)
+        
+        # 2. Periodo dell'app (se vuoto va in fallback sul mese corrente UTC) -> allow_none=False
+        self.period: Optional[datetime] = validate_period(os.getenv("WAID_PERIOD"), allow_none=False)
+        
+        self.auto_backfill: bool = os.getenv("AUTO_BACKFILL", "false").lower() == "true"
+        
         self.mock_now: Optional[datetime] = validate_mock_timestamp(os.getenv("WAID_MOCK_NOW"))
         self.mock_interval_hours: int = self._get_int_env("WAID_MOCK_INTERVAL_HOURS", 1)
 
         # Number of lookback days for historical prediction reconciliation
         self.reconciliation_cutoff_days: Optional[int] = self._get_int_env("WAID_RECONCILIATION_CUTOFF_DAYS", 6)
+        
+        # Sanity check for expected schema target (e.g. Supabase)
+        self.db_schema_target: Optional[str] = os.getenv("WAID_DB_SCHEMA_TARGET", "draft")
 
         # Backend platform configurations (multi-target Supabase database)
         self.dev_db_config: DBCredentials = get_db_credentials("draft")
         self.prod_db_config: DBCredentials = get_db_credentials("prod")
         self.retro_db_config: DBCredentials = get_db_credentials("retro")
 
-        # Fallback/Default active configuration based on WAID_TARGET_ENV or Cloud injection
-        self.active_db_config: DBCredentials = get_db_credentials()
+        # Fallback/Default active configuration based on WAID_DB_SCHEMA_TARGET or Cloud injection
+        self.active_db_config: DBCredentials = get_db_credentials(self.db_schema_target)
 
         self._validate_config()
         if boot_settings.debug_mode and execution_guard("WAID_DUMP"):
@@ -487,26 +598,18 @@ class WaidSettings(BaseConfig):
         super()._validate_config(optional_fields={
             "mock_now", 
             "backfill_begin_period", 
-            "backfill_end_period"
+            "backfill_end_period",
+            "ecowitt_latitude",
+            "ecowitt_longitude",
+            "ecowitt_elevation_m",
+            "ecowitt_floor",
+            "ecowitt_api_key",
+            "ecowitt_application_key",
+            "ecowitt_gw_ip"
         })
         
         station_errors = []
-
-        # Station ID check
-        if not self.ecowitt_station_id or not str(self.ecowitt_station_id).strip():
-            station_errors.append("WAID_ECOWITT_STATION_ID is missing or empty.")
-
-        # Station Name check
-        if not self.ecowitt_station_name or not str(self.ecowitt_station_name).strip():
-            station_errors.append("WAID_ECOWITT_STATION_NAME is missing or empty.")
-
-        # Elevation vs Floor check
-        if self.ecowitt_elevation_m is None and self.ecowitt_floor is None:
-            station_errors.append(
-                "Missing station height configuration! Specify either WAID_ECOWITT_ELEVATION_M "
-                "(relative height in meters) or WAID_ECOWITT_FLOOR in environment config."
-            )
-
+        
         # Simulation mode check: requires mock file if enabled
         if self.waid_sim_mode and not self.waid_db:
             station_errors.append(
@@ -528,6 +631,10 @@ class WaidSettings(BaseConfig):
         @param tz_str The timezone string to validate (e.g., 'Europe/Rome').
         @return Validated timezone string.
         """
+        # If the field is empty or None, skip validation and return as is (or handle the default upstream)
+        if not tz_str or not tz_str.strip():
+            return tz_str
+
         try:
             ZoneInfo(tz_str)
             return tz_str
@@ -543,17 +650,31 @@ class WaidSettings(BaseConfig):
 # UTILITY FUNCTIONS & LOGGING SETUP
 # ==============================================================================
 
-def validate_period(value: str) -> datetime:
+def validate_period(value: Optional[str], allow_none: bool = True) -> Optional[datetime]:
     """
     @brief Validates YYYY-MM inputs and converts them into standard datetime instances.
     
     @param value Period string formatted as YYYY-MM.
-    @return Parsed datetime instance.
+    @param allow_none If True, returns None when input is empty/missing instead of defaulting.
+    @return Parsed datetime instance or None.
     """
+    if not value or not str(value).strip():
+        if allow_none:
+            return None
+        
+        current_period = datetime.now(timezone.utc).strftime("%Y-%m")
+        logger.warning(
+            f"[CONFIG_FALLBACK] WAID_PERIOD is missing or empty. Using default fallback: '{current_period}'"
+        )
+        value = current_period
+
     try:
-        return datetime.strptime(value, "%Y-%m")
-    except ValueError:
-        logger.error(f"[CRITICAL] Invalid month format: '{value}'. Expected format is YYYY-MM (e.g., 2025-12).", file=sys.stderr)
+        return datetime.strptime(value.strip(), "%Y-%m")
+    except (ValueError, TypeError):
+        logger.error(
+            f"[CRITICAL] Invalid month format: '{value}'. Expected format is YYYY-MM (e.g., 2025-12).",
+            file=sys.stderr,
+        )
         sys.exit(WaidExit.INPUT_FAIL)
 
 
@@ -576,8 +697,6 @@ def validate_mock_timestamp(value: Optional[str]) -> Optional[datetime]:
 # ==============================================================================
 # INITIALIZATION RUNTIME
 # ==============================================================================
-
-logger.info("Boot WAID pipeline...")
 
 boot_env = BootSettings()
 waid_settings_instance = WaidSettings(boot_settings=boot_env)
@@ -614,26 +733,5 @@ class WaidBoot:
             return getattr(self._settings, name)
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
-
 if boot_env.debug_mode:
     logger.debug(f"WAID_VERSION = {repr(os.environ.get('WAID_VERSION'))} (configuration source: waid.env)")
-
-logger.remove()
-logger.add(
-    sys.stderr,
-    level=boot_env.log_level.upper(),
-    colorize=True,
-    format="<level>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:8} | {file.name}:{function}:{line} | {message}</level>"
-)
-
-if waid_settings_instance.log_dir:
-    waid_settings_instance.log_dir.mkdir(parents=True, exist_ok=True)
-    log_file_path = waid_settings_instance.log_dir / f"waid_pipeline_{datetime.now().strftime('%Y%m%d')}.log"
-    logger.add(
-        str(log_file_path),
-        level=boot_env.log_level.upper(),
-        colorize=False,
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:8} | {file.name}:{function}:{line} | {message}"
-    )
-
-logger.debug("Debugging successfully activated")

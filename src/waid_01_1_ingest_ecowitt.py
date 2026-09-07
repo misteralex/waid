@@ -4,22 +4,21 @@
 @file waid_01_1_ingest_ecowitt.py
 @brief WAID automated Ecowitt data ingestor.
 @details Downloads split monthly CSV files directly from the station gateway web server
-         using wget. Validates sizes and handles connectivity/timeout constraints.
+         using urllib. Validates sizes and handles connectivity/timeout constraints.
 @author AF
 @date 2026
 """
 
 import os
-import subprocess
 import argparse
 from datetime import datetime
 from pathlib import Path
 import sys
-from loguru import logger
 import urllib.request
-import glob
+import urllib.error
+from loguru import logger
 
-# Import WaidBoot configuration and utility classess
+# Import WaidBoot configuration and utility classes
 sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
 from boot import (
     WaidBoot,
@@ -44,13 +43,13 @@ def check_url_exists(url: str, timeout: int = 30) -> bool:
         return False
     return False
 
-    
+
 def download_ecowitt_data(
     env: WaidBoot,
     args: argparse.Namespace
 ) -> int:
     """
-    @brief Downloads monthly CSV logs from the Ecowitt gateway server.
+    @brief Downloads monthly CSV logs from the Ecowitt gateway server using urllib.
     @param env WaidBoot configuration and path context.
     @param args Parsed command line arguments containing period, IP, port, and timeout.
     @return Status exit code integer.
@@ -94,29 +93,28 @@ def download_ecowitt_data(
 
     logger.info(f"Downloading {chunk_name}")
 
-    command = [
-        "wget",
-        "-q",
-        "-O",
-        str(temp_file),
-        url
-    ]
-
     MIN_SIZE_BYTES = 100
 
     try:
-        result = subprocess.run(
-            command,
-            timeout=timeout,
-            capture_output=True
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("Download timeout")
+        req = urllib.request.Request(url, headers={"User-Agent": "WAID-Ingestor/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as response, open(temp_file, "wb") as out_file:
+            if response.status != 200:
+                logger.error(f"HTTP error: {response.status}")
+                return env.waid_exit.DATA_FAIL
+            out_file.write(response.read())
+    except (TimeoutError, urllib.error.URLError) as e:
+        logger.error(f"Download timeout or network error: {e}")
+        if temp_file.exists():
+            temp_file.unlink()
+        return env.waid_exit.DATA_FAIL
+    except Exception as e:
+        logger.error(f"Unexpected error during download: {e}")
+        if temp_file.exists():
+            temp_file.unlink()
         return env.waid_exit.DATA_FAIL
 
     download_ok = (
-        result.returncode == 0
-        and temp_file.exists()
+        temp_file.exists()
         and temp_file.stat().st_size >= MIN_SIZE_BYTES
     )
 

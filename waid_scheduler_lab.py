@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_scheduler.py
+@file waid_scheduler_lab.py
 @brief Continuous background scheduler with automatic initial backfill check and retroactive simulation support.
 @details Operates as the long-running operational service for WAID or runs in retroactive simulation mode 
          iterating through historical periods step-by-step.
@@ -50,15 +50,18 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     @param extra_args Optional list of additional command-line arguments.
     @return Process return code integer.
     """
-    cmd = [sys.executable, "waid_orchestrate.py", "--run-mode", mode]
+    cmd = [sys.executable, "waid_orchestrate_lab.py", "--run-mode", mode]
     
     if extra_args is None:
         extra_args = []
 
-    mock_now = os.environ.get("WAID_MOCK_NOW")
+    raw_mock_now = os.environ.get("WAID_MOCK_NOW", "").strip()
+    # Ensure raw_mock_now is treated as active only if it represents a valid string timestamp
+    is_mock_active = bool(raw_mock_now) and raw_mock_now.lower() not in ("none", "null", "false")
+
     if mode == "incremental" and "--period" not in extra_args:
-        if mock_now:
-            current_month = mock_now[:7]
+        if is_mock_active:
+            current_month = raw_mock_now[:7]
         else:
             current_month = datetime.now().strftime("%Y-%m")
         extra_args.extend(["--period", current_month])
@@ -66,10 +69,12 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     if extra_args:
         cmd.extend(extra_args)
 
-    # Propagate the simulation timestamp environment variable to the subprocess
+    # Propagate the simulation timestamp environment variable to the subprocess if active
     env_vars = os.environ.copy()
-    if mock_now:
-        env_vars["WAID_MOCK_NOW"] = mock_now
+    if is_mock_active:
+        env_vars["WAID_MOCK_NOW"] = raw_mock_now
+    else:
+        env_vars.pop("WAID_MOCK_NOW", None)
 
     result = subprocess.run(cmd, env=env_vars, check=False)
     return result.returncode
@@ -119,7 +124,7 @@ def main() -> int:
                     logger.info(f"=== [RETROACTIVE STEP] Processing timestamp: {mock_now_str} ===")
                     
                     # Pass simulation flags to the orchestrator
-                    extra_passthrough = ["--skip-ingestion", "--mock-now", mock_now_str]
+                    extra_passthrough = ["--skip-ingestion-deploy", "--mock-now", mock_now_str]
                     code = run_pipeline("incremental", extra_args=extra_passthrough)
                     
                     if code != 0:

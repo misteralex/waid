@@ -8,6 +8,5 @@
 # ==============================================================================
 
 packages:
-  - git: "git@github.com:dbt-labs/dbt-utils.git"
-    revision: 1.3.0
-    warn-unpinned: false
+  - package: dbt-labs/dbt_utils
+    version: 1.3.0

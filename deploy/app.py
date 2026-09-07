@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file app.py
+@file waid_08_1_viz_streamlit_app.py
 @brief Streamlit public analytics dashboard featuring dedicated tabs for all 6 weather features and 3-way comparisons,
        integrated with automated deployment packaging, dynamic DB loading (SQLite/Supabase), and standard error handling.
 @author AF
@@ -39,6 +39,7 @@ sys.path.append(
 )
 from boot import WaidBoot, WError, WaidExit
 
+
 def get_deployment_status() -> str:
     """
     @brief Checks whether the deployment directory exists and is up to date relative to the source script.
@@ -68,9 +69,9 @@ def run_deployment_setup(env: WaidBoot) -> None:
     """
     deploy_dir = Path(env.deploy_dir)
     src_script = Path(__file__).resolve()
-    db_source = Path(env.waid_data_dir) / env.deploy_file
-    
-    logger.info(f"🔶 Environment : {getattr(env, 'env_name', os.getenv('WAID_ENV', 'unknown'))}")
+    db_source = Path(env.waid_data_dir / env.deploy_db_file)
+    db_dest = Path(deploy_dir / "data" / env.deploy_db_file)
+
     logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
     logger.info(f"🔶 DB Target   : {getattr(env, 'target_env', os.getenv('WAID_TARGET_ENV', 'draft'))}")    
     logger.info(f"Initializing deployment package at: {deploy_dir}")
@@ -102,8 +103,9 @@ def run_deployment_setup(env: WaidBoot) -> None:
     # 3. Copy database file to deployment root directory
     if db_source.exists():
         (deploy_dir / "data").mkdir(parents=True, exist_ok=True)
-        shutil.copy(db_source, deploy_dir / "data" / "waid_deploy.db")
-        logger.success(f"Database successfully copied to: {deploy_dir / 'data' / 'waid_deploy.db'}")
+        logger.info(f"Data deployment from {db_source} to {db_dest}")
+        shutil.copy(db_source, db_dest)
+        logger.success(f"Database successfully copied to: {db_dest}")
     else:
         logger.warning(f"Source database not found at {db_source}")
 
@@ -118,15 +120,6 @@ def load_public_data() -> pd.DataFrame:
     """
     try:
         env = WaidBoot()
-        
-        # Sanity check for expected schema target
-        target_schema = (
-            getattr(env, "target_env", None) or 
-            os.getenv("WAID_TARGET_SCHEMA") or 
-            os.getenv("WAID_TARGET_ENV", "draft")
-        ).lower()
-        if target_schema not in ["draft", "prod", "retro"]:
-            target_schema = "draft"
     
         deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
         
@@ -174,12 +167,10 @@ def load_public_data() -> pd.DataFrame:
                 st.error(f"Missing Supabase credentials in environment: {', '.join(missing)}")
                 return pd.DataFrame()
 
-            schema_name = getattr(env, "target_env", None) or os.getenv("WAID_TARGET_SCHEMA") or os.getenv("WAID_TARGET_ENV", "draft").lower()
-
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
 
-            query = f"SELECT * FROM {schema_name}.public_forecasts ORDER BY timestamp ASC;"
+            query = f"SELECT * FROM {env.db_schema_target}.public_forecasts ORDER BY timestamp ASC;"
             df = pd.read_sql_query(query, engine)
 
         except Exception as e:
@@ -189,8 +180,8 @@ def load_public_data() -> pd.DataFrame:
     # Local Mode: Fetch data from SQLite database
     else:
         base_dir = Path(__file__).resolve().parent
-        cloud_deploy_db = base_dir / "data" / "waid_deploy.db" if base_dir.name == "deploy" else base_dir / "deploy" / "data" / "waid_deploy.db"
-        local_deploy_db = Path("deploy/data/waid_deploy.db")
+        cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
+        local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
         
         if cloud_deploy_db.exists():
             db_path = cloud_deploy_db
@@ -198,7 +189,7 @@ def load_public_data() -> pd.DataFrame:
             db_path = local_deploy_db
         else:
             try:
-                db_path = Path(env.deploy_dir) / "data" / env.deploy_file
+                db_path = Path(env.deploy_dir) / "data" / env.deploy_db_file
             except Exception:
                 return pd.DataFrame()
         
@@ -231,7 +222,7 @@ def load_public_data() -> pd.DataFrame:
 
     return df
 
-def run_dashboard() -> None:
+def run_dashboard(env: WaidBoot) -> None:
     """
     @brief Executes the Streamlit interactive visualization dashboard logic.
     """
@@ -244,10 +235,13 @@ def run_dashboard() -> None:
         st.warning("Public analytics database not found or empty.")
         return
     
-    # Robust timestamp parsing with explicit UTC conversion and naive stripping for correct chart alignment
+    # Robust timestamp parsing with explicit UTC localization and conversion to local timezone
     df['ts_target'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    if df['ts_target'].dt.tz is not None:
-        df['ts_target'] = df['ts_target'].dt.tz_convert(None)
+    if df['ts_target'].dt.tz is None:
+        df['ts_target'] = df['ts_target'].dt.tz_localize('UTC')
+    
+    target_tz = env.tz_timezone
+    df['ts_target'] = df['ts_target'].dt.tz_convert(target_tz).dt.tz_convert(None)  
 
     for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
         if f'pred_{k}' in df.columns and f'diff_{k}' in df.columns:
@@ -277,9 +271,21 @@ def run_dashboard() -> None:
 
     st.sidebar.header("Configuration")
     selected_date = st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
-    
-    st.sidebar.info("**ERA5 Latency Note**: ERA5 reanalysis data typically has a ~7 day publication delay. Select older past dates to inspect ERA5 ground truth metrics.")
 
+    # Estraggo la data massima con dati ERA5 presenti
+    era5_available = df[df['temp_era5'].notnull()]['ts_target']
+
+    if not era5_available.empty:
+        max_era5_str = era5_available.max().strftime('%Y-%m-%d')
+        st.sidebar.info(
+            f"**ERA5 Latency Note:**\n\n"
+            f"ERA5 reanalysis data typically has a ~7-day publication delay.\n\n"
+            f"📅 **Latest Available Ground Truth:** `{max_era5_str}`\n\n"
+            f"Select dates up to this day to inspect ERA5 benchmark metrics."
+        )
+    else:
+        st.sidebar.warning("⚠️ No ERA5 ground truth data currently available.")
+    
     df_day = df[df['date_str'] == selected_date].copy()
     if df_day.empty:
         st.warning(f"No data available for {selected_date}.")
@@ -322,7 +328,7 @@ def run_dashboard() -> None:
             if f'ecowitt_{key}' in df_day.columns:
                 fig1.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2, dash='dot')))
             fig1.update_layout(height=350, hovermode="x unified", yaxis_title=unit, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig1, width="stretch")
 
             st.markdown(f"#### 2. Local Sensor (Ecowitt) vs ERA5 Reanalysis Truth")
             fig2 = go.Figure()
@@ -331,7 +337,7 @@ def run_dashboard() -> None:
             if f'{key}_era5' in df_day.columns:
                 fig2.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
             fig2.update_layout(height=350, hovermode="x unified", yaxis_title=unit, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
             st.markdown(f"#### 3. Model Prediction vs ERA5 Reanalysis Truth")
             fig3 = go.Figure()
@@ -339,11 +345,11 @@ def run_dashboard() -> None:
             if f'{key}_era5' in df_day.columns:
                 fig3.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
             fig3.update_layout(height=350, hovermode="x unified", yaxis_title=unit, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width="stretch")
 
     st.markdown("---")
     with st.expander("View Raw Database Records & Metrics"):
-        st.dataframe(df_day, use_container_width=True)
+        st.dataframe(df_day, width="stretch")
 
 def main() -> int:
     """
@@ -351,31 +357,31 @@ def main() -> int:
 
     @return Process exit status code.
     """
-    try:
+    try:      
         parser = argparse.ArgumentParser(description="WAID Streamlit Dashboard & Deploy Packager")
         parser.add_argument("--deploy", action="store_true", help="Executes setup and update of the deployment folder")
         args = parser.parse_args()
 
         env = WaidBoot()
-
+                
         if args.deploy:
             run_deployment_setup(env)
         else:
             if not args.deploy and get_script_run_ctx() is None:
                 logger.error(
                     "\n"
-                    "⚠️ WARNING: this script is a Streamlit application.\n"
+                    "WARNING: this script is a Streamlit application.\n"
                     "Do not run it directly with:\n"
-                    "    python waid_08_2_viz_streamlit_app.py\n"
+                    "    python src/waid_08_1_viz_streamlit_app.py\n"
                     "\n"
                     "Run it instead with:\n"
                     "    streamlit run waid_08_2_viz_streamlit_app.py\n"
                     "or\n"
-                    "    ./src/waid_08_2_viz_streamlit_app.py --deploy\n"
+                    "    ./src/waid_08_1_viz_streamlit_app.py --deploy\n"
                 )
                 return WaidExit.INTERNAL_ERROR
             
-            run_dashboard()
+            run_dashboard(env)
 
     except WError as e:
         logger.error(f"[WAID ERROR] {e.message}")

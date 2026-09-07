@@ -1,44 +1,51 @@
 {{ config(
     materialized='incremental',
-    unique_key='timestamp',
+    unique_key=['timestamp', 'model_version'],
     indexes=[{'columns': ['timestamp']}]
 ) }}
 
 /**
- * @file inference_evaluation.sql
- * @brief Incremental dbt model to evaluate model prediction performance against actuals and ERA5 benchmarks.
- * @details Joins predictions, local Ecowitt actuals, and ERA5 baselines to compute deltas, absolute errors, and percentage errors.
- * @author AF
- * @date 2026
+ * @file inference_quality.sql
+ * @brief dbt incremental model to evaluate forecast quality vs actuals and ERA5 benchmark.
+ * @details Joins ML model inference predictions with Ecowitt ground-truth observations 
+ *          and ERA5 reanalysis data to compute absolute deltas and percentage error metrics.
  */
 
-{% set mock_now = env_var('WAID_MOCK_NOW', '') %}
+-- Retrieve the mock timestamp either from dbt --vars or from environment variable
+{% set mock_now = var('waid_mock_now', env_var('WAID_MOCK_NOW', '')) %}
 
 WITH source_predictions AS (
-    -- Extract and clean model predictions with incremental window filtering
+    /**
+     * @brief Extract raw model forecast predictions.
+     * @details Filters predictions based on incremental lookback window (-3 days) 
+     *          and optional mock timestamp boundary. Clips non-physical values.
+     */
     SELECT
         timestamp,
         model_version,
+        created_at AS ts_emission,
         pred_temp,
         pred_pres,
         pred_rh,
         pred_wind,
         CASE WHEN pred_solar > 0.0 THEN pred_solar ELSE 0.0 END AS pred_solar,
         CASE WHEN pred_rain > 0.0 THEN pred_rain ELSE 0.0 END AS pred_rain
-    FROM {{ ref('inference_prediction') }}
+    FROM {{ source('external_raw', 'inference_forecast') }}
     WHERE 1=1
-    {% if mock_now is not none %}
-      AND timestamp <= '{{ mock_now }}'
-    {% endif %}
 
     {% if is_incremental() %}
-    -- Process records from the last 3 days for incremental efficiency
-    AND timestamp >= datetime((SELECT COALESCE(MAX(timestamp), '1970-01-01 00:00:00') FROM {{ this }}), '-3 day')
+    AND created_at >= datetime((SELECT COALESCE(MAX(timestamp), '1970-01-01 00:00:00') FROM {{ this }}), '-3 day')
+    {% endif %}
+    
+    {% if mock_now != '' %}
+    AND created_at <= '{{ mock_now }}'
     {% endif %}
 ),
 
 source_actuals AS (
-    -- Extract actual verified weather records from the Ecowitt staging model
+    /**
+     * @brief Extract actual ground-truth weather station observations.
+     */
     SELECT 
         timestamp,
         temperature AS actual_temp,
@@ -49,13 +56,12 @@ source_actuals AS (
         hourly_rain AS actual_rain
     FROM {{ ref('stg_ecowitt') }}
     WHERE temperature IS NOT NULL
-      {% if mock_now is not none %}
-      AND timestamp <= '{{ mock_now }}'
-      {% endif %}
 ),
 
 source_era5 AS (
-    -- Extract ERA5 reanalysis baseline values for comparison
+    /**
+     * @brief Extract ERA5 reanalysis benchmark dataset.
+     */
     SELECT
         timestamp,
         era5_temp AS temp_era5,
@@ -65,13 +71,8 @@ source_era5 AS (
         era5_solar AS solar_era5,
         era5_rain AS rain_era5
     FROM {{ ref('int_matches_bias') }}
-    WHERE 1=1
-    {% if mock_now is not none %}
-      AND timestamp <= '{{ mock_now }}'
-    {% endif %}
 )
 
--- Combine predictions, actuals, and benchmarks to compute evaluation metrics
 SELECT
     p.timestamp,
     p.model_version,
@@ -100,7 +101,7 @@ SELECT
     e.solar_era5,
     e.rain_era5,
     
-    -- Deltas (Prediction vs Actual Ecowitt)
+    -- Deltas (vs Ecowitt)
     (p.pred_temp - a.actual_temp) AS delta_temp,
     (p.pred_pres - a.actual_pres) AS delta_pres,
     (p.pred_rh - a.actual_rh) AS delta_rh,
@@ -108,24 +109,24 @@ SELECT
     (p.pred_solar - a.actual_solar) AS delta_solar,
     (p.pred_rain - a.actual_rain) AS delta_rain,
 
-    -- Absolute Errors (Prediction vs Actual Ecowitt)
-    ABS(p.pred_temp - a.actual_temp) AS abs_error_temp,
-    ABS(p.pred_pres - a.actual_pres) AS abs_error_pres,
-    ABS(p.pred_rh - a.actual_rh) AS abs_error_rh,
-    ABS(p.pred_wind - a.actual_wind) AS abs_error_wind,
-    ABS(p.pred_solar - a.actual_solar) AS abs_error_solar,
-    ABS(p.pred_rain - a.actual_rain) AS abs_error_rain,
+    -- Absolute Errors (vs ERA5 Reanalysis Benchmark)
+    ABS(p.pred_temp - e.temp_era5) AS abs_error_temp,
+    ABS(p.pred_pres - e.pres_era5) AS abs_error_pres,
+    ABS(p.pred_rh - e.rh_era5) AS abs_error_rh,
+    ABS(p.pred_wind - e.wind_era5) AS abs_error_wind,
+    ABS(p.pred_solar - e.solar_era5) AS abs_error_solar,
+    ABS(p.pred_rain - e.rain_era5) AS abs_error_rain,
     
-    -- Percentage Errors (Prediction vs Actual Ecowitt)
-    (ABS(p.pred_temp - a.actual_temp) / NULLIF(a.actual_temp, 0)) * 100 AS perc_error_temp,
-    (ABS(p.pred_pres - a.actual_pres) / NULLIF(a.actual_pres, 0)) * 100 AS perc_error_pres,
-    (ABS(p.pred_rh - a.actual_rh) / NULLIF(a.actual_rh, 0)) * 100 AS perc_error_rh,
-    (ABS(p.pred_wind - a.actual_wind) / NULLIF(a.actual_wind, 0)) * 100 AS perc_error_wind,
-    (ABS(p.pred_solar - a.actual_solar) / NULLIF(a.actual_solar, 0)) * 100 AS perc_error_solar,
-    (ABS(p.pred_rain - a.actual_rain) / NULLIF(a.actual_rain, 0)) * 100 AS perc_error_rain
+    -- Percentage Errors (vs ERA5)
+    (ABS(p.pred_temp - e.temp_era5) / NULLIF(e.temp_era5, 0)) * 100 AS perc_error_temp,
+    (ABS(p.pred_pres - e.pres_era5) / NULLIF(e.pres_era5, 0)) * 100 AS perc_error_pres,
+    (ABS(p.pred_rh - e.rh_era5) / NULLIF(e.rh_era5, 0)) * 100 AS perc_error_rh,
+    (ABS(p.pred_wind - e.wind_era5) / NULLIF(e.wind_era5, 0)) * 100 AS perc_error_wind,
+    (ABS(p.pred_solar - e.solar_era5) / NULLIF(e.solar_era5, 0)) * 100 AS perc_error_solar,
+    (ABS(p.pred_rain - e.rain_era5) / NULLIF(e.rain_era5, 0)) * 100 AS perc_error_rain
 
 FROM source_predictions p
-INNER JOIN source_actuals a 
+LEFT JOIN source_actuals a 
     ON p.timestamp = a.timestamp
 LEFT JOIN source_era5 e
     ON p.timestamp = e.timestamp

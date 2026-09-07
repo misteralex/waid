@@ -1,79 +1,83 @@
+# ==============================================================================
+# @file marts_models.yml
+# @brief dbt Schema documentation for analytical Mart layer models.
+# @details Defines schema specifications and explicit data types for station metadata,
+#          inference consensus statistics, and forecast quality models.
+# ==============================================================================
+
 version: 2
+
 models:
+  # ============================================================================
+  # Station Metadata Mart Model
+  # ============================================================================
   - name: station_metadata
+    description: "Physical metadata and training parameters for deployment stations."
     columns:
       - name: station_id
-        data_type: UNKNOWN
+        data_type: TEXT
       - name: station_name
-        data_type: UNKNOWN
+        data_type: TEXT
       - name: latitude
         data_type: REAL
       - name: longitude
         data_type: REAL
       - name: elevation_m
-        data_type: UNKNOWN
+        data_type: REAL
       - name: height_above_ground_m
-        data_type: UNKNOWN
+        data_type: REAL
       - name: min_training_days
         data_type: INT
       - name: retrain_window_days
         data_type: INT
       - name: updated_at
-        data_type: UNKNOWN
+        data_type: TIMESTAMP
       - name: sensor_specs
         data_type: TEXT
-  - name: inference_prediction
-    columns:
-      - name: timestamp
-        data_type: NUM
-      - name: model_version
-        data_type: TEXT
-      - name: pred_temp
-        data_type: REAL
-      - name: pred_pres
-        data_type: REAL
-      - name: pred_rh
-        data_type: REAL
-      - name: pred_wind
-        data_type: REAL
-      - name: pred_solar
-        data_type: REAL
-      - name: pred_rain
-        data_type: REAL
+
+  # ============================================================================
+  # Inference Statistics Mart Model
+  # ============================================================================
   - name: inference_stats
+    description: "Consensus statistics and uncertainty standard deviations per model version."
     columns:
       - name: model_version
         data_type: TEXT
       - name: model_version_tag
         data_type: TEXT
       - name: avg_temp
-        data_type: UNKNOWN
+        data_type: REAL
       - name: std_temp
-        data_type: UNKNOWN
+        data_type: REAL
       - name: avg_pres
-        data_type: UNKNOWN
+        data_type: REAL
       - name: std_pres
-        data_type: UNKNOWN
+        data_type: REAL
       - name: avg_rh
-        data_type: UNKNOWN
+        data_type: REAL
       - name: std_rh
-        data_type: UNKNOWN
+        data_type: REAL
       - name: avg_wind
-        data_type: UNKNOWN
+        data_type: REAL
       - name: std_wind
-        data_type: UNKNOWN
+        data_type: REAL
       - name: avg_solar
-        data_type: UNKNOWN
+        data_type: REAL
       - name: std_solar
-        data_type: UNKNOWN
+        data_type: REAL
       - name: avg_rain
-        data_type: UNKNOWN
+        data_type: REAL
       - name: std_rain
-        data_type: UNKNOWN
+        data_type: REAL
+
+  # ============================================================================
+  # Inference Quality Mart Model
+  # ============================================================================
   - name: inference_quality
+    description: "Reconciliation model comparing predictions against actuals and ERA5 reanalysis."
     columns:
       - name: timestamp
-        data_type: NUM
+        data_type: TIMESTAMP
       - name: model_version
         data_type: TEXT
       - name: pred_temp
@@ -85,9 +89,9 @@ models:
       - name: pred_wind
         data_type: REAL
       - name: pred_solar
-        data_type: UNKNOWN
+        data_type: REAL
       - name: pred_rain
-        data_type: UNKNOWN
+        data_type: REAL
       - name: actual_temp
         data_type: REAL
       - name: actual_pres
@@ -101,50 +105,50 @@ models:
       - name: actual_rain
         data_type: REAL
       - name: temp_era5
-        data_type: UNKNOWN
+        data_type: REAL
       - name: pres_era5
-        data_type: UNKNOWN
+        data_type: REAL
       - name: rh_era5
-        data_type: UNKNOWN
+        data_type: REAL
       - name: wind_era5
-        data_type: UNKNOWN
+        data_type: REAL
       - name: solar_era5
-        data_type: UNKNOWN
+        data_type: REAL
       - name: rain_era5
-        data_type: UNKNOWN
+        data_type: REAL
       - name: delta_temp
-        data_type: UNKNOWN
+        data_type: REAL
       - name: delta_pres
-        data_type: UNKNOWN
+        data_type: REAL
       - name: delta_rh
-        data_type: UNKNOWN
+        data_type: REAL
       - name: delta_wind
-        data_type: UNKNOWN
+        data_type: REAL
       - name: delta_solar
-        data_type: UNKNOWN
+        data_type: REAL
       - name: delta_rain
-        data_type: UNKNOWN
+        data_type: REAL
       - name: abs_error_temp
-        data_type: UNKNOWN
+        data_type: REAL
       - name: abs_error_pres
-        data_type: UNKNOWN
+        data_type: REAL
       - name: abs_error_rh
-        data_type: UNKNOWN
+        data_type: REAL
       - name: abs_error_wind
-        data_type: UNKNOWN
+        data_type: REAL
       - name: abs_error_solar
-        data_type: UNKNOWN
+        data_type: REAL
       - name: abs_error_rain
-        data_type: UNKNOWN
+        data_type: REAL
       - name: perc_error_temp
-        data_type: UNKNOWN
+        data_type: REAL
       - name: perc_error_pres
-        data_type: UNKNOWN
+        data_type: REAL
       - name: perc_error_rh
-        data_type: UNKNOWN
+        data_type: REAL
       - name: perc_error_wind
-        data_type: UNKNOWN
+        data_type: REAL
       - name: perc_error_solar
-        data_type: UNKNOWN
+        data_type: REAL
       - name: perc_error_rain
-        data_type: UNKNOWN
+        data_type: REAL

@@ -1,4 +1,3 @@
-
 """
 @file waid_shared.py
 @brief serves as the core utility and data processing engine for the Weather-AI project. It acts as a bridge between 
@@ -19,9 +18,9 @@ from boot import WaidBoot, WError, WaidExit
 
 def calculate_theoretical_solar_radiation(
     timestamps: np.ndarray, 
-    lat: float = 48.8566, 
-    lon: float = 2.3522, 
-    local_tz: str = "Europe/Paris"
+    lat: float = None, 
+    lon: float = None, 
+    local_tz: str = None
 ) -> np.ndarray:
     """
     Computes theoretical clear-sky solar radiation based on UTC time of day,
@@ -126,7 +125,7 @@ def fetch_and_resample_ecowitt(env, start_date: str, end_date: str) -> pd.DataFr
         if field in df_eco_raw.columns:
             df_eco_raw[field] = pd.to_numeric(df_eco_raw[field], errors="coerce")
 
-    resample_freq = f"{env.resample_interval_min}min"
+    resample_freq = f"{env.resample_interval_min} min"
     logger.info(f"Resampling local telemetry into {resample_freq} synchronized slots...")
 
     agg_rules = {
@@ -281,3 +280,24 @@ def apply_physics_guardrails(
                 preds[i, j] = apply_physics_guardrails(val, feature=feat, sensor_specs=sensor_specs)
                 
     return np.expand_dims(preds, axis=0) if is_batch else preds
+
+
+def generate_period_range(begin_period: str, end_period: str) -> list[str]:
+    """Generates a list of YYYY-MM periods from start to end inclusive.
+
+    @param begin_period Start month string (YYYY-MM).
+    @param end_period End month string (YYYY-MM).
+    @return List of period strings.
+    """
+    start_date = datetime.strptime(begin_period, "%Y-%m")
+    end_date = datetime.strptime(end_period, "%Y-%m")
+    
+    periods = []
+    curr = start_date
+    while curr <= end_date:
+        periods.append(curr.strftime("%Y-%m"))
+        if curr.month == 12:
+            curr = datetime(curr.year + 1, 1, 1)
+        else:
+            curr = datetime(curr.year, curr.month + 1, 1)
+    return periods

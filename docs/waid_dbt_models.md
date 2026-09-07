@@ -1,15 +1,15 @@
-# 📊 Documentazione Modelli dbt
+# 📊 dbt Models Documentation
 
-> Report generato automaticamente dal `manifest.json` di dbt.
+> Automatically generated report from dbt `manifest.json`.
 
 ---
 
-## 🏗️ Modello: `int_matches_bias`
+## 🏗️ Model: `int_matches_bias`
 
 **Schema:** `main`  
-**Descrizione:** Calculated operational bias between Ecowitt telemetry and ERA5 baseline.
+**Description:** Calculated operational bias between Ecowitt telemetry and ERA5 baseline.
 
-| Colonna | Tipo Dati | Descrizione |
+| Column | Data Type | Description |
 | :--- | :--- | :--- |
 | **timestamp** | `TEXT` | Hourly ISO timestamp (UTC) |
 | **ecowitt_temp** | `UNKNOWN` |  |
@@ -34,86 +34,38 @@
 
 ---
 
-## 🏗️ Modello: `inference_stats`
+## 🏗️ Model: `inference_stats`
 
 **Schema:** `main`  
-**Descrizione:** 
+**Description:** Consensus statistics and uncertainty standard deviations per model version.
 
-| Colonna | Tipo Dati | Descrizione |
+| Column | Data Type | Description |
 | :--- | :--- | :--- |
 | **model_version** | `TEXT` |  |
 | **model_version_tag** | `TEXT` |  |
-| **avg_temp** | `UNKNOWN` |  |
-| **std_temp** | `UNKNOWN` |  |
-| **avg_pres** | `UNKNOWN` |  |
-| **std_pres** | `UNKNOWN` |  |
-| **avg_rh** | `UNKNOWN` |  |
-| **std_rh** | `UNKNOWN` |  |
-| **avg_wind** | `UNKNOWN` |  |
-| **std_wind** | `UNKNOWN` |  |
-| **avg_solar** | `UNKNOWN` |  |
-| **std_solar** | `UNKNOWN` |  |
-| **avg_rain** | `UNKNOWN` |  |
-| **std_rain** | `UNKNOWN` |  |
+| **avg_temp** | `REAL` |  |
+| **std_temp** | `REAL` |  |
+| **avg_pres** | `REAL` |  |
+| **std_pres** | `REAL` |  |
+| **avg_rh** | `REAL` |  |
+| **std_rh** | `REAL` |  |
+| **avg_wind** | `REAL` |  |
+| **std_wind** | `REAL` |  |
+| **avg_solar** | `REAL` |  |
+| **std_solar** | `REAL` |  |
+| **avg_rain** | `REAL` |  |
+| **std_rain** | `REAL` |  |
 
 ---
 
-## 🏗️ Modello: `inference_quality`
+## 🏗️ Model: `inference_quality`
 
 **Schema:** `main`  
-**Descrizione:** 
+**Description:** Reconciliation model comparing predictions against actuals and ERA5 reanalysis.
 
-| Colonna | Tipo Dati | Descrizione |
+| Column | Data Type | Description |
 | :--- | :--- | :--- |
-| **timestamp** | `NUM` |  |
-| **model_version** | `TEXT` |  |
-| **pred_temp** | `REAL` |  |
-| **pred_pres** | `REAL` |  |
-| **pred_rh** | `REAL` |  |
-| **pred_wind** | `REAL` |  |
-| **pred_solar** | `UNKNOWN` |  |
-| **pred_rain** | `UNKNOWN` |  |
-| **actual_temp** | `REAL` |  |
-| **actual_pres** | `REAL` |  |
-| **actual_rh** | `REAL` |  |
-| **actual_wind** | `REAL` |  |
-| **actual_solar** | `REAL` |  |
-| **actual_rain** | `REAL` |  |
-| **temp_era5** | `UNKNOWN` |  |
-| **pres_era5** | `UNKNOWN` |  |
-| **rh_era5** | `UNKNOWN` |  |
-| **wind_era5** | `UNKNOWN` |  |
-| **solar_era5** | `UNKNOWN` |  |
-| **rain_era5** | `UNKNOWN` |  |
-| **delta_temp** | `UNKNOWN` |  |
-| **delta_pres** | `UNKNOWN` |  |
-| **delta_rh** | `UNKNOWN` |  |
-| **delta_wind** | `UNKNOWN` |  |
-| **delta_solar** | `UNKNOWN` |  |
-| **delta_rain** | `UNKNOWN` |  |
-| **abs_error_temp** | `UNKNOWN` |  |
-| **abs_error_pres** | `UNKNOWN` |  |
-| **abs_error_rh** | `UNKNOWN` |  |
-| **abs_error_wind** | `UNKNOWN` |  |
-| **abs_error_solar** | `UNKNOWN` |  |
-| **abs_error_rain** | `UNKNOWN` |  |
-| **perc_error_temp** | `UNKNOWN` |  |
-| **perc_error_pres** | `UNKNOWN` |  |
-| **perc_error_rh** | `UNKNOWN` |  |
-| **perc_error_wind** | `UNKNOWN` |  |
-| **perc_error_solar** | `UNKNOWN` |  |
-| **perc_error_rain** | `UNKNOWN` |  |
-
----
-
-## 🏗️ Modello: `inference_prediction`
-
-**Schema:** `main`  
-**Descrizione:** 
-
-| Colonna | Tipo Dati | Descrizione |
-| :--- | :--- | :--- |
-| **timestamp** | `NUM` |  |
+| **timestamp** | `TIMESTAMP` |  |
 | **model_version** | `TEXT` |  |
 | **pred_temp** | `REAL` |  |
 | **pred_pres** | `REAL` |  |
@@ -121,35 +73,65 @@
 | **pred_wind** | `REAL` |  |
 | **pred_solar** | `REAL` |  |
 | **pred_rain** | `REAL` |  |
+| **actual_temp** | `REAL` |  |
+| **actual_pres** | `REAL` |  |
+| **actual_rh** | `REAL` |  |
+| **actual_wind** | `REAL` |  |
+| **actual_solar** | `REAL` |  |
+| **actual_rain** | `REAL` |  |
+| **temp_era5** | `REAL` |  |
+| **pres_era5** | `REAL` |  |
+| **rh_era5** | `REAL` |  |
+| **wind_era5** | `REAL` |  |
+| **solar_era5** | `REAL` |  |
+| **rain_era5** | `REAL` |  |
+| **delta_temp** | `REAL` |  |
+| **delta_pres** | `REAL` |  |
+| **delta_rh** | `REAL` |  |
+| **delta_wind** | `REAL` |  |
+| **delta_solar** | `REAL` |  |
+| **delta_rain** | `REAL` |  |
+| **abs_error_temp** | `REAL` |  |
+| **abs_error_pres** | `REAL` |  |
+| **abs_error_rh** | `REAL` |  |
+| **abs_error_wind** | `REAL` |  |
+| **abs_error_solar** | `REAL` |  |
+| **abs_error_rain** | `REAL` |  |
+| **perc_error_temp** | `REAL` |  |
+| **perc_error_pres** | `REAL` |  |
+| **perc_error_rh** | `REAL` |  |
+| **perc_error_wind** | `REAL` |  |
+| **perc_error_solar** | `REAL` |  |
+| **perc_error_rain** | `REAL` |  |
 
 ---
 
-## 🏗️ Modello: `station_metadata`
+## 🏗️ Model: `station_metadata`
 
 **Schema:** `main`  
-**Descrizione:** 
+**Description:** Physical metadata and training parameters for deployment stations.
 
-| Colonna | Tipo Dati | Descrizione |
+| Column | Data Type | Description |
 | :--- | :--- | :--- |
-| **station_id** | `UNKNOWN` |  |
-| **station_name** | `UNKNOWN` |  |
+| **station_id** | `TEXT` |  |
+| **station_name** | `TEXT` |  |
 | **latitude** | `REAL` |  |
 | **longitude** | `REAL` |  |
-| **elevation_m** | `UNKNOWN` |  |
-| **height_above_ground_m** | `UNKNOWN` |  |
+| **elevation_m** | `REAL` |  |
+| **height_above_ground_m** | `REAL` |  |
 | **min_training_days** | `INT` |  |
 | **retrain_window_days** | `INT` |  |
-| **updated_at** | `UNKNOWN` |  |
+| **updated_at** | `TIMESTAMP` |  |
 | **sensor_specs** | `TEXT` |  |
 
 ---
 
-## 🏗️ Modello: `stg_ecowitt`
+## 🏗️ Model: `stg_ecowitt`
 
 **Schema:** `main`  
-**Descrizione:** 
+**Description:** 
 
-| Colonna | Tipo Dati | Descrizione |
+| Column | Data Type | Description |
 | :--- | :--- | :--- |
 | **timestamp** | `None` |  |
 | **temperature** | `None` |  |
@@ -161,12 +143,12 @@
 
 ---
 
-## 🏗️ Modello: `stg_matches`
+## 🏗️ Model: `stg_matches`
 
 **Schema:** `main`  
-**Descrizione:** Dataset unificato di validazione tra Ecowitt e ERA5
+**Description:** Dataset unificato di validazione tra Ecowitt e ERA5
 
-| Colonna | Tipo Dati | Descrizione |
+| Column | Data Type | Description |
 | :--- | :--- | :--- |
 | **timestamp** | `None` |  |
 | **ecowitt_temp** | `None` |  |

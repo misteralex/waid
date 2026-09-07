@@ -1,0 +1,26 @@
+services:
+  waid-arm:
+    image: waid_arm:latest
+    container_name: waid_arm
+    user: "${WAID_UID:-1000}:${WAID_GID:-1000}"
+    restart: unless-stopped
+    environment:
+      - PYTHONPATH=/app:/app/config:/app/src
+      - WAID_SOURCE=/app
+    build:
+      context: ${WAID_SOURCE:-.}
+      dockerfile: docker/arm/Dockerfile
+      target: prod   
+    env_file:
+      - ${WAID_SOURCE}/config/boot.env
+      - ${WAID_SOURCE}/config/waid.env
+    volumes:
+      - ${WAID_SOURCE}/data:/app/data
+      - ${WAID_SOURCE}/logs:/app/logs
+      - ${WAID_SOURCE}/config:/app/config
+      - ${WAID_SOURCE}/dbt/target:/app/dbt/target
+      - ${WAID_SOURCE}/dbt/logs:/app/dbt/logs
+      - ${WAID_SOURCE}/deploy:/app/deploy
+      - ${WAID_SOURCE}/docker/arm/entrypoint.sh:/app/docker/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/app/docker/entrypoint.sh"]
+    command: ["python", "/app/waid_scheduler_lab.py"]

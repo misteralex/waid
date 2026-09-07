@@ -11,6 +11,8 @@
 """
 
 import os
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
 import sys
 import glob
 import sqlite3
@@ -52,6 +54,8 @@ def denormalize_predictions(y_scaler, preds_scaled: np.ndarray) -> np.ndarray:
 
 
 def ensure_model_registry_schema(env: WaidBoot) -> None:
+    station_id = env.ecowitt_station_id
+    
     """Ensures ml_model_registry table exists before performing registration operations."""
     create_model_registry_stmt = """
     CREATE TABLE IF NOT EXISTS ml_model_registry (
@@ -374,9 +378,6 @@ def get_available_periods(env: WaidBoot) -> list[str]:
 def main() -> int:
     try:
         env = WaidBoot()
-    
-        # Read setup mode from environment (0: normal, 1: reset db, 2: reset all, 3: force ML training)
-        setup_mode = int(os.getenv("WAID_SETUP_MODE", "0"))
 
         # Inspect Hardware Accelerators
         gpus = tf.config.list_physical_devices('GPU')
@@ -397,8 +398,9 @@ def main() -> int:
         periods_to_train = get_available_periods(env)
         latest_period = periods_to_train[-1]
 
+        # Read setup mode from environment (0: normal, 1: reset db, 2: reset all, 3: force ML training)
         # Check if retraining is required based on guardrails or forced by setup_mode == 3
-        if setup_mode == 3:
+        if env.setup_mode == 3:
             logger.warning("WAID_SETUP_MODE=3 detected: Forcing ML model retraining, bypassing minimum training interval guardrails.")
         else:
             if not check_retrain_required(env, station_id, station_name, latest_period, min_training_days):

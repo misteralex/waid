@@ -1,0 +1,31 @@
+services:
+  postgres-prefect:
+    image: postgres:16-alpine
+    container_name: waid_postgres
+    profiles: ["prefect"]
+
+  waid-lab-prefect:
+    profiles: ["prefect"]
+    build:
+      context: ${WAID_SOURCE:-../..}
+      dockerfile: docker/Dockerfile
+      target: lab
+    image: waid_lab:latest
+    container_name: waid_lab_prefect
+    env_file:
+      - ${WAID_SOURCE:-../..}/config/boot.env
+    ports:
+      - "4200:4200"
+    restart: unless-stopped
+
+  waid-lab-orchestrator:
+    profiles: ["edge"]
+    build:
+      context: ${WAID_SOURCE:-../..}
+      dockerfile: docker/Dockerfile
+      target: lab
+    image: waid_lab:latest
+    container_name: waid_lab_orchestrator
+    env_file:
+      - ${WAID_SOURCE:-../..}/config/boot.env
+    restart: unless-stopped

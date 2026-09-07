@@ -14,17 +14,17 @@ if "%COMMAND%"=="" set COMMAND=pipeline
 
 if /I "%COMMAND%"=="pipeline" (
     echo Starting pipeline locally...
-    python waid_orchestrate.py
+    python waid_orchestrate_lab.py
     goto end
 )
 if /I "%COMMAND%"=="local-pipeline" (
     echo Starting pipeline locally...
-    python waid_orchestrate.py
+    python waid_orchestrate_lab.py
     goto end
 )
 if /I "%COMMAND%"=="scheduler" (
     echo Starting continuous scheduler locally...
-    python waid_scheduler.py
+    python waid_scheduler_lab.py
     goto end
 )
 if /I "%COMMAND%"=="dashboard" (

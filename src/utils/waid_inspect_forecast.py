@@ -25,7 +25,7 @@ def fetch_forecasts(env: WaidBoot, limit: int = 10, exp_id: str | None = None) -
     """Retrieves forecast records optionally filtered by experiment_id or limited by count."""
     
     # Switch target database if exp_id is requested or fallback to waid_db
-    db_path = env.waid_deploy_db if exp_id else env.waid_db
+    db_path = env.deploy_db_file if exp_id else env.waid_db
 
     where_clause = f"WHERE t.experiment_id = '{exp_id}'" if exp_id else ""
 

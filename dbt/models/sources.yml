@@ -128,3 +128,15 @@ sources:
             data_type: REAL
           - name: hourly_rain_mm
             data_type: REAL
+
+      - name: inference_forecast
+        description: "Tabella master delle previsioni e riconciliazione generate dallo script Python 07_1"
+        columns:
+          - name: timestamp
+            description: "Timestamp target della previsione"
+            tests:
+              - not_null
+          - name: model_version
+            description: "Versione del modello ML utilizzato"
+            tests:
+              - not_null

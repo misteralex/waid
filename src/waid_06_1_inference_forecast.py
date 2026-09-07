@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_07_1_inference_forecast.py
+@file waid_06_1_inference_forecast.py
 @brief 6-hour meteorological inference engine using centralized physical guardrails 
        and incremental reconciliation.
 @details Executes model prediction, reconstructs absolute values, and leverages 
@@ -25,6 +25,8 @@ import tensorflow as tf
 from loguru import logger
 
 # Inject configuration path safely
+logger.debug(f"Environment initialized: WAID_SOURCE={os.environ.get('WAID_SOURCE')}")
+
 sys.path.append(
     str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
 )
@@ -58,12 +60,17 @@ def load_active_model_artifacts(env: WaidBoot):
             row = cursor.fetchone()
 
         if row:
-            model_path, x_scaler_path, y_scaler_path = row
+            # Estrae solo il nome del file ignorando eventuali prefissi obsoleti come /app/
+            model_path = str(env.ml_models_dir / Path(row[0]).name)
+            x_scaler_path = str(env.ml_models_dir / Path(row[1]).name)
+            y_scaler_path = str(env.ml_models_dir / Path(row[2]).name)
         else:
-            model_path = str(env.ml_models_dir / env.ml_model_h5_file)
-            x_scaler_path = str(env.ml_models_dir / env.ml_input_scaler_pkl_file)
-            y_scaler_path = str(env.ml_models_dir / env.ml_output_scaler_pkl_file)
+            model_path = str(env.ml_models_dir / Path(env.ml_model_h5_file).name)
+            x_scaler_path = str(env.ml_models_dir / Path(env.ml_input_scaler_pkl_file).name)
+            y_scaler_path = str(env.ml_models_dir / Path(env.ml_output_scaler_pkl_file).name)
 
+        logger.info(f"Resolved model_path: {model_path}")
+                     
         if not os.path.exists(model_path):
             raise WError(f"Trained model file not found at: {model_path}", code=WaidExit.DATA_FAIL)
         if not os.path.exists(x_scaler_path) or not os.path.exists(y_scaler_path):
@@ -154,8 +161,15 @@ def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
     return np.expand_dims(input_data, axis=0)
 
 
-def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list[str], preds_guarded: np.ndarray, sensor_specs: dict):
-    """Directly persist and update permanent inference_forecast table for all 6 features with dynamic pending reconciliation."""
+def persist_and_update_inference_forecast(
+    env: WaidBoot, 
+    future_timestamps: list[str], 
+    preds_guarded: np.ndarray, 
+    sensor_specs: dict,
+    window_start: str,
+    window_stop: str
+):
+    """Directly persist and update permanent inference_forecast table with window lineage and pending reconciliation."""
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
@@ -164,6 +178,9 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                 CREATE TABLE IF NOT EXISTS inference_forecast(
                     timestamp TEXT,
                     model_version TEXT,
+                    created_at TEXT,
+                    ts_window_start TEXT,
+                    ts_window_stop TEXT,
                     pred_temp REAL,
                     pred_rh REAL,
                     pred_pres REAL,
@@ -174,7 +191,6 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                     diff_rh REAL,
                     historical_bias_temp REAL,
                     drift_vs_bias REAL,
-                    created_at TEXT,
                     PRIMARY KEY (timestamp, model_version)
                 )
             """)
@@ -183,6 +199,9 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
             existing_columns = [col[1] for col in cursor.fetchall()]
             
             required_columns = {
+                "created_at": "TEXT",
+                "ts_window_start": "TEXT",
+                "ts_window_stop": "TEXT",
                 "diff_temp": "REAL", "diff_rh": "REAL", "diff_pres": "REAL", 
                 "diff_wind": "REAL", "diff_solar": "REAL", "diff_rain": "REAL",
                 "historical_bias_temp": "REAL", "historical_bias_rh": "REAL", "historical_bias_pres": "REAL", 
@@ -212,25 +231,27 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                     cursor.execute("""
                         INSERT INTO inference_forecast (
                             timestamp, model_version,
-                            pred_temp, pred_rh, pred_pres, pred_wind, pred_rain, pred_solar,
-                            created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            created_at, ts_window_start, ts_window_stop,
+                            pred_temp, pred_rh, pred_pres, pred_wind, pred_rain, pred_solar
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         timestamp, model_version,
+                        created_at, window_start, window_stop,
                         float(p_temp), float(p_rh), float(p_pres),
-                        float(p_wind), float(p_rain), float(p_solar),
-                        created_at
+                        float(p_wind), float(p_rain), float(p_solar)
                     ))
                 else:
                     cursor.execute("""
                         UPDATE inference_forecast 
-                        SET pred_temp = ?, pred_rh = ?, pred_pres = ?, 
-                            pred_wind = ?, pred_rain = ?, pred_solar = ?, created_at = ?
+                        SET created_at = ?, ts_window_start = ?, ts_window_stop = ?,
+                            pred_temp = ?, pred_rh = ?, pred_pres = ?, 
+                            pred_wind = ?, pred_rain = ?, pred_solar = ?
                         WHERE timestamp = ? AND model_version = ?
                     """, (
+                        created_at, window_start, window_stop,
                         float(p_temp), float(p_rh), float(p_pres),
                         float(p_wind), float(p_rain), float(p_solar),
-                        created_at, timestamp, model_version
+                        timestamp, model_version
                     ))
 
             logger.info("Starting dynamic reconciliation for all pending records with missing diffs...")
@@ -239,7 +260,7 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                 SELECT timestamp 
                 FROM inference_forecast 
                 WHERE (diff_temp IS NULL OR diff_rh IS NULL OR diff_pres IS NULL 
-                   OR diff_wind IS NULL OR diff_solar IS NULL OR diff_rain IS NULL)
+                   OR diff_rh = 0.0 OR diff_temp = 0.0)
                   AND model_version = ?
                 ORDER BY timestamp ASC
             """, (model_version,))
@@ -269,7 +290,6 @@ def persist_and_update_inference_forecast(env: WaidBoot, future_timestamps: list
                         a_solar if a_solar is not None else 0.0,
                         a_rain if a_rain is not None else 0.0
                     ]])
-                    # Utilizing centralized apply_physics_guardrails from waid_shared
                     actual_guarded = apply_physics_guardrails(
                         actual_raw_arr, 
                         future_timestamps=[ts], 
@@ -345,10 +365,14 @@ def main() -> int:
         args, _ = parser.parse_known_args()
         
         env = WaidBoot()
-
+        
         if args.mock_now:
             env.mock_now = validate_mock_timestamp(args.mock_now)
             logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+        
+        logger.info(f"Environment initialized: WAID_ML_MODELS_DIR={os.environ.get('WAID_ML_MODELS_DIR')}")
+        logger.info(f"Environment initialized: env.ml_model_h5_file={env.ml_model_h5_file}")
+        logger.info(f"Environment initialized: env.ml_models_dir={env.ml_models_dir}")
         
         logger.info("Initializing 6-hour weather inference and strict physics-safe guardrail pipeline...")
 
@@ -357,6 +381,10 @@ def main() -> int:
         model, x_scaler, y_scaler = load_active_model_artifacts(env)
         df_raw = fetch_recent_telemetry(env)
         recent_timestamps = df_raw['timestamp'].tolist()
+
+        # Extract lineage window timestamps
+        window_start = recent_timestamps[0]
+        window_stop = recent_timestamps[-1]
 
         X_infer = build_inference_tensor(env, df_raw)
 
@@ -395,14 +423,25 @@ def main() -> int:
             for h in range(preds_deltas.shape[0]):
                 preds_absolute[h, :] = last_actual_features + preds_deltas[h, :]
 
+        # 1. Normalizza l'ultimo timestamp della telemetria assicurandoti che sia convertito in UTC
         if env.mock_now:
-            last_dt = pd.to_datetime(env.mock_now).floor('h')
+            last_dt = pd.to_datetime(env.mock_now)
         else:
-            last_dt = pd.to_datetime(recent_timestamps[-1]).floor('h')
-            
-        last_dt_hourly = last_dt.floor('h')
-        
-        future_timestamps = [(last_dt_hourly + pd.Timedelta(hours=i+1)).strftime("%Y-%m-%d %H:%M:%S") for i in range(env.forecast_horizon_hours)]
+            last_dt = pd.to_datetime(recent_timestamps[-1])
+
+        # Se il timestamp letto non ha timezone, viene localizzato prima nell'ora locale della stazione e poi convertito in UTC
+        if last_dt.tzinfo is None:
+            utc_base_dt = last_dt.tz_localize(env.tz_timezone, ambiguous='NaT', nonexistent='shift_forward').tz_convert('UTC')
+        else:
+            utc_base_dt = last_dt.tz_convert('UTC')
+
+        utc_base_dt_hourly = utc_base_dt.floor('h')
+
+        # 2. Genera i timestamp futuri (UTC) a partire dall'ora UTC appena calcolata
+        future_timestamps = [
+            (utc_base_dt_hourly + pd.Timedelta(hours=i+1)).strftime("%Y-%m-%d %H:%M:%S") 
+            for i in range(env.forecast_horizon_hours)
+        ]
         
         # Apply physics guardrails using the centralized function from waid_shared
         preds_guarded = apply_physics_guardrails(
@@ -410,7 +449,15 @@ def main() -> int:
             future_timestamps, 
             env=env
         )
-        persist_and_update_inference_forecast(env, future_timestamps, preds_guarded, {})
+        
+        persist_and_update_inference_forecast(
+            env, 
+            future_timestamps, 
+            preds_guarded, 
+            {}, 
+            window_start=window_start, 
+            window_stop=window_stop
+        )
 
         logger.success("6-hour absolute forecast outputs successfully generated, guarded, and stored.")
         return WaidExit.SUCCESS

@@ -1,0 +1,12 @@
+prefect-version: 2.x
+name: waid-project
+deployments:
+- name: waid-incremental-production
+  entrypoint: waid_orchestrate.py:waid_main_flow
+  work_pool:
+    name: default-agent-pool
+  schedule:
+    interval: 3600
+  parameters:
+    period: 2026-09
+    skip_ingestion: false

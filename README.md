@@ -24,10 +24,8 @@ The live demonstration and operational dashboard of the WAID framework is hosted
 |  • Isolated Deployment DB: Syncs via Stage 08 ETL export pipeline     |
 |  • Continuous Integration: Automatically rebuilt upon git push        |
 +-----------------------------------------------------------------------+
+
 ```
-
----
-
 
 ## 🏛️ Architecture & Workflow
 
@@ -86,8 +84,65 @@ The WAID platform supports flexible deployment options across different environm
 | Scenario | Target Platform | Storage Backend | Core Environment Variables | Primary Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | **1. Local Bare-Metal / Dev** | Host PC | Local SQLite (`waid_deploy.db`) | `WAID_DEPLOY_MODE=local` | Rapid testing, offline analysis, script debugging. |
-| **2. Containerized PC (Docker)** | Host PC (x86_64) | Remote PostgreSQL (Supabase) | `WAID_DEPLOY_MODE=cloud`<br>`WAID_TARGET_ENV=draft/prod` | Local containerized production environment & simulation. |
+| **2. Containerized PC (Docker)** | Host PC (x86_64) | Remote PostgreSQL (Supabase) | `WAID_DEPLOY_MODE=cloud`<br>`WAID_DB_SCHEMA_TARGET=draft/prod` | Local containerized production environment & simulation. |
 | **3. Edge Deployment (Raspberry Pi)** | ARM64 Board | Hybrid (SQLite / Supabase) | `WAID_PLATFORM=board`<br>`WAID_DEPLOY_MODE=cloud` | Low-power edge node for sensor data gathering and sync. |
+
+---
+
+### Prefect Orchestration
+
+The WAID platform uses Prefect to provide a production-grade orchestration layer for scheduling, executing, and monitoring the weather data and machine learning pipeline.
+
+The Prefect architecture is split into two complementary components:
+
+waid_prefect_manager.py — Acts as the Prefect runtime and infrastructure manager. It bootstraps and monitors the Prefect server, ensures the required work pool is available, dynamically generates and registers deployments, triggers initial flow runs, and starts the workers responsible for executing queued flows.
+
+waid_orchestrate.py — Acts as the pipeline workflow orchestrator. It defines and coordinates the individual Prefect tasks and sub-flows, invokes the underlying WAID processing scripts, manages execution parameters and backfill operations, and provides centralized logging and error handling.
+
+The two components work together to provide a complete execution lifecycle:
+
+Prefect Server
+      │
+      ▼
+waid_prefect_manager.py
+      │
+      ├── Work Pool
+      ├── Deployments
+      └── Worker
+            │
+            ▼
+     waid_orchestrate.py
+            │
+            ├── Data Ingestion
+            ├── dbt Transformations
+            ├── Data Matching & Bias
+            ├── ML Training / Inference
+            └── Visualization & Deployment
+
+This architecture provides scheduled execution, workflow monitoring, retry/error handling, and modular pipeline orchestration while keeping infrastructure management separate from the actual WAID processing logic.
+
+For resource-constrained Edge/ARM deployments, WAID also provides a lightweight orchestration alternative based on waid_scheduler_lab.py and waid_orchestrate_lab.py, avoiding the additional memory overhead introduced by the Prefect stack.
+
+#### Edge Orchestration
+
+Long-running operational daemon and retroactive simulation driver for the WAID pipeline. It coordinates scheduled execution loops and multi-period historical simulations by managing environment contexts and invoking waid_orchestrate_lab.py. It manages:
+
+- Initial environment validation through check_initial_setup_needed, verifying the presence of the waid_db SQLite database.
+- Automated historical backfill during first-time initialization when no existing database environment is detected.
+- Pipeline subprocess execution through run_pipeline, launching waid_orchestrate_lab.py in the appropriate backfill or incremental execution mode.
+- Historical time simulation through the WAID_MOCK_NOW environment variable, allowing retrospective and step-by-step simulations without modifying the host operating system clock.
+- Retroactive simulation mode through --retroactive, iterating through historical timestamp intervals defined by --mock-begin and --mock-end.
+- Incremental simulation execution at each historical step using --skip-ingestion-deploy.
+- Final publication after retroactive simulation through waid_08_1_viz_streamlit_app.
+- Continuous operational execution through a recurring loop based on env.scheduled_interval_sec, running incremental updates and ML forecasts and sleeping between scheduled executions.
+- The module provides the lightweight execution and scheduling layer for the WAID platform, coordinating the complete pipeline from data ingestion through machine learning, forecast evaluation, visualization, and documentation.
+
+Unlike the Prefect-based orchestration stack, this lightweight scheduler is specifically designed for Edge deployments on ARM devices and other resource-constrained hardware. Prefect provides advanced workflow orchestration and monitoring capabilities but introduces additional memory and runtime overhead that may be unsuitable for low-resource environments. The Edge architecture therefore relies on direct subprocess execution and a lightweight scheduling loop through waid_scheduler_lab.py and waid_orchestrate_lab.py, providing a significantly more resource-efficient way to run the complete WAID pipeline.
+
+For more information about the ARM-compatible Docker deployment, see the ARM Docker Deployment section.
+
+
+
 
 ---
 
@@ -106,7 +161,7 @@ Runs inside an x86_64 container connected to the live Supabase PostgreSQL instan
 ##### Environment Setup (`config/waid.env`):
 ```bash
 WAID_DEPLOY_MODE=cloud
-WAID_TARGET_ENV=prod
+WAID_DB_SCHEMA_TARGET=prod
 WAID_DB_HOST=db.xxxxxxxxxxxx.supabase.co
 WAID_DB_USER=postgres
 WAID_DB_PASSWORD=your_supabase_password
@@ -125,7 +180,7 @@ docker run -d \
 
 ##### Dynamic CLI Override Example:
 ```bash
-WAID_DEPLOY_MODE=cloud WAID_TARGET_ENV=draft streamlit run src/waid_08_1_viz_streamlit_app.py
+WAID_DEPLOY_MODE=cloud WAID_DB_SCHEMA_TARGET=draft streamlit run src/waid_08_1_viz_streamlit_app.py
 ```
 
 #### 3. Edge Deployment Strategy (ARM Edge Boards)
@@ -142,23 +197,25 @@ When executing in edge environments (`WAID_PLATFORM=board`), resource constraint
 The framework relies heavily on predefined environment variables to manage root paths, execution modes, and mock timelines across local development and production environments.
 
 * **`WAID_SOURCE`**: Must be predefined in your terminal session, pointing directly to your project root directory (e.g., `/home/alex/waid`).
-* **`WAID_SETUP_MODE`**: Controls the setup initialization behavior within the pipeline (e.g., `0` for standard incremental regime, `1` for soft reset, and `2` for hard reset).
-* **`WAID_ENV`**: Manages the deployment and execution context. Setting `WAID_ENV=prod` enables automated deployment synchronization and git push scripts, whereas `dev` keeps operations strictly local.
+* **`WAID_SETUP_MODE`**: Controls the pipeline's setup and initialization behavior:
+  * `0`: Normal execution (standard incremental regime).
+  * `1`: Database reset.
+  * `2`: Complete reset (reset all).
+  * `3`: Force ML model training.
 * **`WAID_MOCK_NOW`**: Overrides the current system timestamp during simulations or backfilling to evaluate historic periods deterministically.
 
 ---
 
 ## 🚀 Scheduling & Orchestration Guide
 
-### 1. Continuous Operational Scheduling (`waid_scheduler.py`)
+### 1. Continuous Operational Scheduling (`waid_scheduler_lab.py`)
 The scheduler operates as a long-running operational service or manages retroactive simulations step-by-step. 
 
 * **Standard Continuous Execution**:
-  ```bash
+```bash
   export WAID_SOURCE=/home/alex/waid
-  export WAID_ENV=prod
-  python src/waid_scheduler.py
-
+  export WAID_SETUP_MODE=0
+  python src/waid_scheduler_lab.py
 ```
 
 On first boot, it verifies whether the SQLite database exists via `check_initial_setup_needed()`. If missing, it automatically triggers an initial historical `backfill` phase before entering the continuous operational loop at predefined intervals.
@@ -167,22 +224,22 @@ On first boot, it verifies whether the SQLite database exists via `check_initial
 To simulate historical performance step-by-step across specific timelines, provide the required start and end timestamps using either `--mock-begin`/`--mock-end` or `--begin-period`/`--end-period`:
 ```bash
 export WAID_SOURCE=/home/alex/waid
-export WAID_ENV=dev
-python src/waid_scheduler.py --retroactive --mock-begin "2026-01-01 00:00:00" --mock-end "2026-01-05 00:00:00"
+export WAID_TIER_NAME=dev
+python src/waid_scheduler_lab.py --retroactive --mock-begin "2026-01-01 00:00:00" --mock-end "2026-01-05 00:00:00"
 
 ```
 
 
 This mode executes the setup sequence, iterates through the specified interval using incremental steps, and dynamically assigns `WAID_MOCK_NOW` for each iteration.
 
-### 2. Orchestration & Time Mocking (`waid_orchestrate.py`)
+### 2. Orchestration & Time Mocking (`waid_orchestrate_lab.py`)
 
 The core orchestrator coordinates individual pipeline stages. To test or execute the pipeline against a specific simulated point in time, propagate the `WAID_MOCK_NOW` environment variable directly from your terminal:
 
 ```bash
 export WAID_SOURCE=/home/alex/waid
 export WAID_MOCK_NOW="2026-02-15 12:00:00"
-python src/waid_orchestrate.py --run-mode incremental
+python src/waid_orchestrate_lab.py --run-mode incremental
 
 ```
 
@@ -220,14 +277,13 @@ The framework is organized into modular steps and orchestration utilities spanni
 
 ### Stage 06: Inference & Quality Assessment
 
-* **`waid_06_1_inference_engine.py`**: Executes the end-to-end inference lifecycle by validating model artifacts, enriching telemetry features with cyclic time components and clear-sky radiation, and persisting predictions into `inference_records`.
+* **`waid_06_1_inference_forecast.py`**: Manages the 6-hour forecasting pipeline, enforcing physics-safe guardrails and hardware quantization, and logging multi-step forecasts, actuals, historical biases, and drifts.
 * **`dbt mart models (`inference_stats`, `inference_prediction`, `inference_quality`, `inference_forecast`)**`: Aggregates metrics, maintains incremental model outputs, and evaluates prediction errors against ground-truth and ERA5 baselines.
-* **`waid_06_5_inference_quality.py`**: Verifies database schemas, table row counts, and consistency benchmarks for inference and quality tables.
+* **`waid_06_4_inference_quality.py`**: Verifies database schemas, table row counts, and consistency benchmarks for inference and quality tables.
 
 ### Stage 07 & 08: Forecasting & Visualization
 
-* **`waid_07_1_inference_forecast.py`**: Manages the 6-hour forecasting pipeline, enforcing physics-safe guardrails and hardware quantization, and logging multi-step forecasts, actuals, historical biases, and drifts.
-* **`waid_07_2_export_deploy_db.py`**: Executes an ETL pipeline that extracts operational weather forecasts and quality metrics from the internal lab database, consolidates the data via a left join, and exports it into an isolated SQLite database (`WAID_DEPLOY_FILE`) for public dissemination.
+* **`waid_07_1_export_deploy_db.py`**: Executes an ETL pipeline that extracts operational weather forecasts and quality metrics from the internal lab database, consolidates the data via a left join, and exports it into an isolated SQLite database (`WAID_DEPLOY_FILE`) for public dissemination.
 * **`waid_08_1_viz_streamlit_app.py`**: Provides a Streamlit-based analytics dashboard that monitors operational weather performance, including 3-way comparisons between model predictions, local sensor data (Ecowitt), and ERA5 ground truth metrics.
 * **`waid_08_2_doc_dbt_deploy.py`**: Generate and deploy an automated Markdown data dictionary from current dbt data models.
 
@@ -238,7 +294,7 @@ The framework is organized into modular steps and orchestration utilities spanni
 * **Core Language:** Python 3.12 / 3.13
 * **Machine Learning:** TensorFlow / Keras (LSTM models), Scikit-Learn
 * **Data Transformation & Modeling:** `dbt` (Data Build Tool), Pandas, NumPy
-* **Storage & Orchestration:** SQLite (Edge/Local Mocking), Loguru, Custom Pipeline Orchestrator (`waid_orchestrate.py`, `waid_scheduler.py`)
+* **Storage & Orchestration:** SQLite (Edge/Local Mocking), Loguru, Custom Pipeline Orchestrator (`waid_orchestrate_lab.py`, `waid_scheduler_lab.py`)
 * **Deployment Context:** Dual platform execution supporting resource-constrained Edge environments and Lab draft pipelines via Docker, Docker Compose, and cross-platform launcher scripts (`start.sh` / `start.bat`).
 * **Dependencies & Testing:** Managed through `requirements.txt` (installed by default in a local `.venv` environment) and tested via `pytest` (`pyproject.toml`, `conftest.py`).
 

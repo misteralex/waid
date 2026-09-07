@@ -3,60 +3,51 @@ set -e
 
 ##
 # @file start.sh
-# @brief WAID Local and Docker Launcher Script for Linux/WSL.
-# @details Manages local and containerized execution of pipelines, background schedulers, and Streamlit dashboards.
+# @brief WAID Production Launcher Script for Linux/WSL.
+# @details Manages production execution of pipelines via Prefect and Docker.
 # @author AF
 # @date 2026
 
 show_usage() {
-    echo "=== WAID Launcher (Linux/WSL) ==="
+    echo "=== WAID Production Launcher ==="
     echo "Usage: ./start.sh [option]"
     echo ""
     echo "Available options:"
-    echo "  (no option)         - Runs the pipeline locally (default)"
-    echo "  pipeline            - Runs the pipeline locally"
-    echo "  scheduler           - Starts the continuous scheduler locally"
-    echo "  dashboard           - Starts the dashboard locally"
-    echo "  docker-pipeline     - Runs the pipeline once in Docker"
-    echo "  docker-scheduler    - Starts the continuous scheduler in Docker"
-    echo "  docker-dashboard    - Starts the dashboard in Docker"
+    echo "  (no option)         - Runs production pipeline with Prefect (default)"
+    echo "  up                  - Starts production container in background"
+    echo "  down                - Stops production container"
+    echo "  logs                - Shows production logs"
     echo "  --help, -h          - Shows this help menu"
-    echo "======================================="
+    echo "====================================="
 }
 
-COMMAND="${1:-pipeline}"
+# Load environment variables from boot.env if available
+if [ -f "config/boot.env" ]; then
+    set -a
+    source config/boot.env
+    set +a
+fi
+
+COMMAND="${1:-up}"
 
 case "$COMMAND" in
-    pipeline|local-pipeline)
-        echo "Starting pipeline locally..."
-        python waid_orchestrate.py
+    up|run)
+        echo "Starting WAID Production (Prefect) in Docker..."
+        docker compose -f docker/prod/docker-compose.yml up
         ;;
-    scheduler)
-        echo "Starting continuous scheduler locally..."
-        python waid_scheduler.py
+    down)
+        echo "Stopping WAID Production..."
+        docker compose -f docker/prod/docker-compose.yml down
         ;;
-    dashboard|local-dashboard)
-        echo "Starting dashboard locally..."
-        streamlit run src/waid_08_1_viz_streamlit_app.py
-        ;;
-    docker-pipeline)
-        echo "Starting pipeline in Docker (batch)..."
-        docker-compose run --rm pipeline
-        ;;
-    docker-scheduler)
-        echo "Starting continuous scheduler in Docker (background)..."
-        docker-compose up -d pipeline
-        ;;
-    docker-dashboard)
-        echo "Starting dashboard in Docker (http://localhost:8501)..."
-        docker-compose up dashboard
+    logs)
+        echo "Showing production logs..."
+        docker compose -f docker/prod/docker-compose.yml logs -f
         ;;
     --help|-h|help|menu)
         show_usage
         ;;
     *)
         echo "Unrecognized command: $COMMAND"
-        echo ""
         show_usage
         exit 1
         ;;

@@ -1,0 +1,52 @@
+services:
+  # Database runtime configuration and ephemeral storage setup
+  postgres-prefect:
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: prefectpassword
+      POSTGRES_DB: prefect
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prefect -d prefect"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  # Override for Prefect execution profile
+  waid-lab-prefect:
+    depends_on:
+      postgres-prefect:
+        condition: service_healthy
+    environment:
+      - PREFECT_API_URL=http://127.0.0.1:4200/api
+      - PREFECT_SERVER_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefectpassword@postgres-prefect:5432/prefect
+      - PREFECT_HOME=/tmp/prefect
+      # Optimization and log suppression settings
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - OMP_NUM_THREADS=1
+      - TZ=Europe/Paris
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${WAID_SOURCE:-../..}:/app
+    tmpfs:
+      - /app/.venv
+      - /app/.venv-dbt
+    command: ["sh", "-c", "prefect server database upgrade -y && python waid_prefect_manager.py"]
+
+  # Override for native orchestrator execution profile
+  waid-lab-orchestrator:
+    environment:
+      # Optimization and log suppression settings
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - OMP_NUM_THREADS=1
+      - TZ=Europe/Paris
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${WAID_SOURCE:-../..}:/app
+    tmpfs:
+      - /app/.venv
+      - /app/.venv-dbt
+    command: ["python", "waid_orchestrate_lab.py"]

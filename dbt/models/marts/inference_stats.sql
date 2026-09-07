@@ -1,50 +1,56 @@
 {{ config(
-    materialized='table',
-    indexes=[{'columns': ['model_version']}]
+    materialized='incremental',
+    unique_key='timestamp',
+    incremental_strategy='merge',
+    indexes=[{'columns': ['timestamp']}]
 ) }}
 
 /**
  * @file inference_stats.sql
- * @brief dbt model to compute statistical metrics across model inference records.
- * @details Aggregates temperature, pressure, humidity, wind, solar, and rain forecasts grouped by model version and tag.
+ * @brief dbt incremental model to accumulate and update forecast consensus statistics.
+ * @details Groups model inference runs by model version and target timestamp to compute
+ *          ensemble averages (consensus) and standard deviations (forecast uncertainty)
+ *          across weather metrics.
  * @author AF
  * @date 2026
  */
 
--- Definizione della variabile dallo standard d'ambiente
-{% set mock_now = env_var('WAID_MOCK_NOW', '') %}
-
 SELECT
     model_version,
-    model_version_tag,
+    timestamp,
     
-    -- Temperature Forecast Stats
-    AVG(outdoor_temperature_c) AS avg_temp,
-    SQRT(AVG(outdoor_temperature_c * outdoor_temperature_c) - AVG(outdoor_temperature_c) * AVG(outdoor_temperature_c)) AS std_temp,
+    -- Total prediction runs/votes aggregated for this timestamp
+    COUNT(*) AS n_votes,
     
-    -- Pressure Forecast Stats
-    AVG(abs_pressure_hpa) AS avg_pres,
-    SQRT(AVG(abs_pressure_hpa * abs_pressure_hpa) - AVG(abs_pressure_hpa) * AVG(abs_pressure_hpa)) AS std_pres,
+    -- Temperature Consensus & Uncertainty
+    AVG(pred_temp) AS consensus_temp,
+    SQRT(AVG(pred_temp * pred_temp) - AVG(pred_temp) * AVG(pred_temp)) AS std_temp,
     
-    -- Humidity Forecast Stats
-    AVG(outdoor_humidity) AS avg_rh,
-    SQRT(AVG(outdoor_humidity * outdoor_humidity) - AVG(outdoor_humidity) * AVG(outdoor_humidity)) AS std_rh,
+    -- Atmospheric Pressure Consensus & Uncertainty
+    AVG(pred_pres) AS consensus_pres,
+    SQRT(AVG(pred_pres * pred_pres) - AVG(pred_pres) * AVG(pred_pres)) AS std_pres,
     
-    -- Wind Forecast Stats
-    AVG(wind_m_s) AS avg_wind,
-    SQRT(AVG(wind_m_s * wind_m_s) - AVG(wind_m_s) * AVG(wind_m_s)) AS std_wind,
+    -- Relative Humidity Consensus & Uncertainty
+    AVG(pred_rh) AS consensus_rh,
+    SQRT(AVG(pred_rh * pred_rh) - AVG(pred_rh) * AVG(pred_rh)) AS std_rh,
     
-    -- Solar Forecast Stats
-    AVG(solar_rad_w_m2) AS avg_solar,
-    SQRT(AVG(solar_rad_w_m2 * solar_rad_w_m2) - AVG(solar_rad_w_m2) * AVG(solar_rad_w_m2)) AS std_solar,
+    -- Wind Speed Consensus & Uncertainty
+    AVG(pred_wind) AS consensus_wind,
+    SQRT(AVG(pred_wind * pred_wind) - AVG(pred_wind) * AVG(pred_wind)) AS std_wind,
     
-    -- Rain Forecast Stats
-    AVG(hourly_rain_mm) AS avg_rain,
-    SQRT(AVG(hourly_rain_mm * hourly_rain_mm) - AVG(hourly_rain_mm) * AVG(hourly_rain_mm)) AS std_rain
+    -- Solar Radiation Consensus & Uncertainty
+    AVG(pred_solar) AS consensus_solar,
+    SQRT(AVG(pred_solar * pred_solar) - AVG(pred_solar) * AVG(pred_solar)) AS std_solar,
+    
+    -- Hourly Rain Consensus & Uncertainty
+    AVG(pred_rain) AS consensus_rain,
+    SQRT(AVG(pred_rain * pred_rain) - AVG(pred_rain) * AVG(pred_rain)) AS std_rain
 
-FROM {{ source('external_raw', 'inference_records') }}
-WHERE 1=1
-{% if mock_now is not none %}
-  AND timestamp <= '{{ mock_now }}'
+FROM {{ source('external_raw', 'inference_forecast') }}
+
+{% if is_incremental() %}
+  -- Filter records strictly greater than the max timestamp present in target table
+  WHERE timestamp > coalesce((SELECT MAX(timestamp) FROM {{ this }}), '1970-01-01 00:00:00')
 {% endif %}
-GROUP BY model_version, model_version_tag
+
+GROUP BY model_version, timestamp

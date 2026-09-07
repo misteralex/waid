@@ -113,10 +113,9 @@ def main() -> int:
         profiles_dir = Path(getattr(env, "config_dir", SYS_PROJECT_ROOT / "config")).resolve()
 
         # Output paths
-        docs_dir = SYS_PROJECT_ROOT / "docs"
-        docs_dir.mkdir(parents=True, exist_ok=True)
-        markdown_output = docs_dir / "waid_dbt_models.md"
-        hash_file = docs_dir / ".dbt_models.hash"
+        env.docs_dir.mkdir(parents=True, exist_ok=True)
+        markdown_output = env.docs_dir / "waid_dbt_models.md"
+        hash_file = env.docs_dir / ".dbt_models.hash"
         
         # 1. CHECK: Calculate models hash
         current_models_hash = calculate_models_hash(dbt_dir)
@@ -127,7 +126,9 @@ def main() -> int:
         else:
             # 2. Execute dbt docs generate
             manifest_path = dbt_dir / "target" / "manifest.json"
-            dbt_cmd = ["dbt", "docs", "generate", "--profiles-dir", str(profiles_dir), "--project-dir", str(dbt_dir)]
+            dbt_cmd = [
+                str(env.dbt_bin), "docs", "generate", "--profiles-dir", str(profiles_dir), "--project-dir", str(dbt_dir)
+            ]
             
             logger.info(f"Executing: {' '.join(dbt_cmd)}")
             result = subprocess.run(dbt_cmd, env=os.environ.copy(), check=False)
