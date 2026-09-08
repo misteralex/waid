@@ -32,7 +32,7 @@ from loguru import logger
 
 # Direct read log variable to set up the required level or fallback to default 'INFO' 
 current_log_level = os.getenv("WAID_LOG_LEVEL", "INFO").upper()
-current_log_dir = Path(os.getenv("WAID_LOG_DIR", "INFO"))
+current_log_dir = Path(os.getenv("WAID_LOG_DIR", "logs"))
 current_config_dir = Path(os.getenv("WAID_CONFIG_DIR", "config"))
 
 # Protection against double initialization (executed once per process)

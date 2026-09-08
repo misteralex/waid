@@ -567,15 +567,16 @@ The WAID project provides cross-platform scripts and Docker configuration files 
 | **`Dockerfile`** | Defines the WAID application image, including the Python 3.12 runtime and required project dependencies. |
 | **`entrypoint.sh`** | Container entrypoint responsible for runtime initialization and environment setup before starting the configured container service. |
 | **`start.sh` / `start.bat`** | Cross-platform execution wrappers for Linux/WSL and Windows. They provide unified commands to launch the WAID pipeline, continuous scheduler, and Streamlit dashboards either locally or within Docker containers. |
+| **`deploy-arm.sh`** | Automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device |
 
 ## Script - Prerequisites
 - Operating System: Linux / WSL2
 - Permissions: Executable rights (chmod +x start.sh)
 - Dependencies: Docker with docker compose plugin installed, valid config/boot.env configuration file.
 
-### `start.sh`
+### start.sh
 
-#### Usage: ./start.sh [option]
+**Usage: ./start.sh [option]**
 
 Available options:
   up, run             - Starts production container stack in Docker (default)
@@ -583,7 +584,7 @@ Available options:
   logs                - Tail live production logs
   --help, -h          - Shows help menu
 
-#### CLI Execution Example
+**CLI Execution Example**
 ```
 # Grant execution permissions
 chmod +x start.sh
@@ -598,9 +599,9 @@ chmod +x start.sh
 ./start.sh down
 ```
 
-### `start-lab.sh`
+### start-lab.sh
 
-#### Usage: ./start_lab.sh [option]
+**Usage: ./start_lab.sh [option]**
 
 Options:
   - pipeline | local-pipeline      Runs single pipeline pass locally
@@ -612,7 +613,7 @@ Options:
   - down | stop | docker-down      Stops and removes all Docker Lab containers
   - --help | -h                    Shows usage help menu
 
-#### CLI Execution Example
+**CLI Execution Example**
 ```
 # 1. Grant execution permissions
 chmod +x start_lab.sh
@@ -626,6 +627,34 @@ chmod +x start_lab.sh
 # 4. Stop and remove all running Docker Lab containers
 ./start_lab.sh down
 ```
+
+### build-docker.sh
+
+It automates the preparation and container build process for the WAID platform across Linux and WSL environments. It automatically navigates to the repository root, loads default runtime environment variables from `config/boot.env`, creates required local storage directories, and delegates the build execution to docker compose.
+
+**Usage: ./docker/build-docker.sh [ENVIRONMENT]**
+
+- ENVIRONMENT (Optional): Specifies the target execution profile:
+  - `prod` (Default): Builds the production container environment.  
+  - `lab`: Builds the development/laboratory environment.  
+  - `arm`: Cross-compiles the Docker image for 64-bit ARM architectures (linux/arm64).  
+
+**CLI Execution Example**
+```
+./docker/build-docker.sh
+# Equivalent to: ./docker/build-docker.sh prod
+```
+
+### deploy-arm.sh
+
+It automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device (e.g., Raspberry Pi). It handles local environment validation, database optimization, Docker ARM64 image building, artifact bundling, SCP transfer, and remote container orchestration via SSH.
+
+**Usage:**
+```
+./docker/arm/deploy-arm.sh
+```
+
+---
 
 ## Testing <a id="testing"></a>
 

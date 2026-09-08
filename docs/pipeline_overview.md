@@ -458,22 +458,32 @@ The Docker build script supports target-specific configuration, allowing the bui
 
 ## Usage Commands
 
-### 1. Build for Host (Default)
-Standard build for local development on Linux/WSL environments.
-```bash
-./build-docker.sh --target host
+### build-docker.sh
+
+It automates the preparation and container build process for the WAID platform across Linux and WSL environments. It automatically navigates to the repository root, loads default runtime environment variables from `config/boot.env`, creates required local storage directories, and delegates the build execution to docker compose.
+
+**Usage: ./docker/build-docker.sh [ENVIRONMENT]**
+
+- ENVIRONMENT (Optional): Specifies the target execution profile:
+  - `prod` (Default): Builds the production container environment.  
+  - `lab`: Builds the development/laboratory environment.  
+  - `arm`: Cross-compiles the Docker image for 64-bit ARM architectures (linux/arm64).  
+
+**CLI Execution Example**
+```
+./docker/build-docker.sh
+# Equivalent to: ./docker/build-docker.sh prod
 ```
 
-### 2. Build for Edge Board
-Targeted build optimized for deployment on edge hardware.
-```bash
-./build-docker.sh --target board
-```
+### deploy-arm.sh
 
-## Options Summary
-| Flag | Description |
-| :--- | :--- |
-| `--target` | Specifies the build platform (`host` or `board`). |
+It automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device (e.g., Raspberry Pi). It handles local environment validation, database optimization, Docker ARM64 image building, artifact bundling, SCP transfer, and remote container orchestration via SSH.
+
+**Usage:**
+```
+./docker/arm/deploy-arm.sh
+```
+---
 
 ## Edge Deployment Readiness
 

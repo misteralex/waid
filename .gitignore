@@ -78,14 +78,13 @@ data/
 dbt/target/
 dbt/logs/
 dbt/dbt_packages/
+deploy/data/
 
 # Ignores all .env files in config...
 config/*.env
 
 # Database files ignore rule with deployment exception
 *.db
-!deploy/data/
-!deploy/data/waid_deploy.db
 
 backup/
 dbt/.user.yml

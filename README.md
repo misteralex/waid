@@ -14,18 +14,20 @@ The live demonstration and operational dashboard of the WAID framework is hosted
 
 > **Live Web App**: <https://waid-analytics.streamlit.app/>
 
-### 🚀 Public Access & Deployment Overview
-```text
-+-----------------------------------------------------------------------+
-|                         WAID LIVE DEMO                                |
-|             https://waid-analytics.streamlit.app/                    |
-+-----------------------------------------------------------------------+
-|  • Operational Nowcasting UI: Live predictions vs Ecowitt vs ERA5     |
-|  • Isolated Deployment DB: Syncs via Stage 08 ETL export pipeline     |
-|  • Continuous Integration: Automatically rebuilt upon git push        |
-+-----------------------------------------------------------------------+
+---
 
-```
+## 🚀 Deployment Overview
+
+  * **OPERATIONAL NOWCASTING**
+    - Live prediction interface
+    - Comparison with Ecowitt observations and ERA5 reanalysis
+  * **DEPLOYMENT**
+    - Isolated operational database
+    - Synchronization via ETL export pipeline
+    - ARM-based board for edge deployment
+  * **CONTINUOUS INTEGRATION & DEPLOYMENT**
+    - Automated build and deployment
+    - Triggered automatically on every Git push
 
 ## 🏛️ Architecture & Workflow
 
@@ -64,7 +66,7 @@ Executes model inference, validates predictions against operational constraints 
 → model inference → prediction validation → quality assessment → telemetry reconciliation
 
 #### Stage 07 — Operational Forecast
-Generate a physics-constrained 6-hour operational forecast, persist it as an auditable forecast state, and continuously reconcile previous predictions against newly observed telemetry.
+Generate a 6-hour LSTM nowcasting enhanced by a physics-informed solar-radiation feature computed deterministically from timestamp and station coordinates, operational forecast, persist it as an auditable forecast state, and continuously reconcile previous predictions against newly observed telemetry.
 
 → Telemetry + Model Artifacts → Inference → Guardrails → Quantization → 6h Forecast → Reconciliation → Forecast Persistence → deployment database
 
@@ -72,6 +74,9 @@ Generate a physics-constrained 6-hour operational forecast, persist it as an aud
 Transforms operational forecast outputs into a lightweight, deployable data product for reporting, visualization, and external consumption.
 
 → export → dbt transformations → deployment database → CLI reporting / Streamlit
+
+**Key point:**
+The theoretical solar-radiation signal is generated at inference time from astronomical geometry rather than observed future telemetry, providing the model with a deterministic representation of the day/night cycle over the forecast horizon.
 
 ---
 
@@ -85,7 +90,7 @@ The WAID platform supports flexible deployment options across different environm
 | :--- | :--- | :--- | :--- | :--- |
 | **1. Local Bare-Metal / Dev** | Host PC | Local SQLite (`waid_deploy.db`) | `WAID_DEPLOY_MODE=local` | Rapid testing, offline analysis, script debugging. |
 | **2. Containerized PC (Docker)** | Host PC (x86_64) | Remote PostgreSQL (Supabase) | `WAID_DEPLOY_MODE=cloud`<br>`WAID_DB_SCHEMA_TARGET=draft/prod` | Local containerized production environment & simulation. |
-| **3. Edge Deployment (Raspberry Pi)** | ARM64 Board | Hybrid (SQLite / Supabase) | `WAID_PLATFORM=board`<br>`WAID_DEPLOY_MODE=cloud` | Low-power edge node for sensor data gathering and sync. |
+| **3. Edge Deployment (ARM-based board)** | ARM64 Board | Hybrid (SQLite / Supabase) | `WAID_PLATFORM=board`<br>`WAID_DEPLOY_MODE=cloud` | Low-power edge node for sensor data gathering and sync. |
 
 ---
 
@@ -101,6 +106,7 @@ waid_orchestrate.py — Acts as the pipeline workflow orchestrator. It defines a
 
 The two components work together to provide a complete execution lifecycle:
 
+```text
 Prefect Server
       │
       ▼
@@ -118,6 +124,7 @@ waid_prefect_manager.py
             ├── Data Matching & Bias
             ├── ML Training / Inference
             └── Visualization & Deployment
+```
 
 This architecture provides scheduled execution, workflow monitoring, retry/error handling, and modular pipeline orchestration while keeping infrastructure management separate from the actual WAID processing logic.
 
