@@ -9,7 +9,7 @@ services:
       - WAID_SOURCE=/app
     build:
       context: ${WAID_SOURCE:-.}
-      dockerfile: docker/arm/Dockerfile
+      dockerfile: ${WAID_SOURCE}/docker/Dockerfile
       target: prod   
     env_file:
       - ${WAID_SOURCE}/config/boot.env

@@ -228,6 +228,26 @@ def run_dashboard(env: WaidBoot) -> None:
     """
 
     st.set_page_config(page_title="WAID Public Analytics", layout="wide")
+
+    # CSS responsive per ottimizzare i margini e i font sui dispositivi mobili (< 768px)
+    st.markdown("""
+        <style>
+        @media (max-width: 768px) {
+            .main .block-container {
+                padding-top: 1.5rem !important;
+                padding-left: 0.8rem !important;
+                padding-right: 0.8rem !important;
+            }
+            [data-testid="stMetricValue"] {
+                font-size: 1.3rem !important;
+            }
+            h3 {
+                font-size: 1.2rem !important;
+            }
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     st.title("WAID — Public Operational & Quality Monitor")
     
     df = load_public_data()
@@ -302,6 +322,13 @@ def run_dashboard(env: WaidBoot) -> None:
         "rain": ("Hourly Rain", "mm")
     }
 
+    # Configurazione Plotly universale e mobile-friendly
+    plotly_config = {
+        'responsive': True,
+        'displayModeBar': False,
+        'scrollZoom': False
+    }
+
     feature_tabs = st.tabs([label for label, unit in features.values()])
     
     for idx, (key, (label, unit)) in enumerate(features.items()):
@@ -327,8 +354,19 @@ def run_dashboard(env: WaidBoot) -> None:
             fig1.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
             if f'ecowitt_{key}' in df_day.columns:
                 fig1.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2, dash='dot')))
-            fig1.update_layout(height=350, hovermode="x unified", yaxis_title=unit, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig1, width="stretch")
+            fig1.update_layout(
+                height=320, 
+                hovermode="x unified", 
+                yaxis_title=unit, 
+                margin=dict(l=10, r=10, t=25, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(
+                fig1, 
+                width="stretch", 
+                config=plotly_config, 
+                key=f"plotly_fig1_{key}_{selected_date}"
+            )
 
             st.markdown(f"#### 2. Local Sensor (Ecowitt) vs ERA5 Reanalysis Truth")
             fig2 = go.Figure()
@@ -336,16 +374,38 @@ def run_dashboard(env: WaidBoot) -> None:
                 fig2.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2)))
             if f'{key}_era5' in df_day.columns:
                 fig2.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
-            fig2.update_layout(height=350, hovermode="x unified", yaxis_title=unit, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig2, width="stretch")
+            fig2.update_layout(
+                height=320, 
+                hovermode="x unified", 
+                yaxis_title=unit, 
+                margin=dict(l=10, r=10, t=25, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(
+                fig2, 
+                width="stretch", 
+                config=plotly_config, 
+                key=f"plotly_fig2_{key}_{selected_date}"
+            )
 
             st.markdown(f"#### 3. Model Prediction vs ERA5 Reanalysis Truth")
             fig3 = go.Figure()
             fig3.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
             if f'{key}_era5' in df_day.columns:
                 fig3.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
-            fig3.update_layout(height=350, hovermode="x unified", yaxis_title=unit, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig3, width="stretch")
+            fig3.update_layout(
+                height=320, 
+                hovermode="x unified", 
+                yaxis_title=unit, 
+                margin=dict(l=10, r=10, t=25, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(
+                fig3, 
+                width="stretch", 
+                config=plotly_config, 
+                key=f"plotly_fig3_{key}_{selected_date}"
+            )
 
     st.markdown("---")
     with st.expander("View Raw Database Records & Metrics"):
