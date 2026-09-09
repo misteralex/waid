@@ -2,32 +2,32 @@ version: 2
 
 models:
   - name: stg_matches
-    description: "Dataset unificato di validazione tra Ecowitt e ERA5"
+    description: "Unified validation dataset comparing Ecowitt local sensor observations and ERA5 reanalysis."
     columns:
-      # Chiave temporale comune
+      # Primary time-series key
       - name: timestamp
         tests:
           - not_null
           - unique
 
-      # Validazione campi Ecowitt unificati
+      # Validation for unified Ecowitt fields
       - name: ecowitt_temp
         tests:
           - dbt_utils.accepted_range:
               min_value: -30
               max_value: 50
       
-      # Validazione campi ERA5 unificati
+      # Validation for unified ERA5 fields
       - name: era5_temp
         tests:
           - dbt_utils.accepted_range:
               min_value: -60
               max_value: 60
               
-      # Controllo di coerenza (opzionale ma consigliato per i match)
+      # Consistency check between ground sensor and reanalysis model
       - name: bias_temp
-        description: "Differenza assoluta tra temperatura Ecowitt e ERA5"
+        description: "Calculated bias (difference) between Ecowitt and ERA5 temperature measurements."
         tests:
           - dbt_utils.accepted_range:
               min_value: -20
-              max_value: 20 # soglia di tolleranza massima tra sensore e modello
+              max_value: 20 # Maximum tolerance threshold between local sensor and benchmark model
