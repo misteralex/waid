@@ -232,16 +232,6 @@ WAID_ENV_FILE = config_dir / "waid.env"
 if WAID_ENV_FILE.exists():
     load_dotenv(dotenv_path=WAID_ENV_FILE, override=True)
     _expand_environment_variables(iterations=2)
-    
-    # Re-apply log level after reading waid.env
-    updated_log_level = os.getenv("WAID_LOG_LEVEL", "INFO").upper()
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level=updated_log_level,
-        colorize=True,
-        format="<level>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:8} | {file.name}:{function}:{line} | {message}</level>"
-    )
 else:
     logger.critical(f"[!] Critical: WAID Configuration file not found at {WAID_ENV_FILE}")
     sys.exit(WaidExit.INPUT_FAIL)

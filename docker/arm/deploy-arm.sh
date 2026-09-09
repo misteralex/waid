@@ -78,7 +78,7 @@ tar -czf waid_bundle.tar.gz \
     waid_scheduler_lab.py \
     waid_orchestrate_lab.py
 
-echo "=== 4. Syncing files to Raspberry Pi via SCP ==="
+echo "=== 4. Syncing files to ARM-based target device via SCP ==="
 ssh ${ARM_USER}@${RASP_IP} "mkdir -p ${RASP_DIR}"
 scp waid_pipeline_arm.tar.gz waid_bundle.tar.gz ${ARM_USER}@${RASP_IP}:${RASP_DIR}/
 

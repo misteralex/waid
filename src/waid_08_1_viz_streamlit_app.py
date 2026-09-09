@@ -95,7 +95,7 @@ def run_deployment_setup(env: WaidBoot) -> None:
     # 2. Generate app.py by updating the @file header
     content = src_script.read_text(encoding="utf-8")
     updated_content = content.replace(
-        "@file waid_08_2_viz_streamlit_app.py", 
+        "@file waid_08_1_viz_streamlit_app.py", 
         "@file app.py"
     )
     (deploy_dir / "app.py").write_text(updated_content, encoding="utf-8")
@@ -112,93 +112,119 @@ def run_deployment_setup(env: WaidBoot) -> None:
     logger.success("Deployment package successfully created!")
 
 @st.cache_data(ttl=300)
-def load_public_data() -> pd.DataFrame:
+def get_available_dates() -> list:
     """
-    @brief Loads public analytics data with dynamic routing based on env.deploy_mode (SQLite for local, Supabase for cloud).
+    @brief Fetches only the distinct list of available dates from the database for fast dropdown rendering.
     
-    @return Cleaned pandas DataFrame containing operational metrics and forecasts.
+    @return Sorted list of date strings (YYYY-MM-DD) in descending order.
     """
     try:
         env = WaidBoot()
-    
         deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
-        
     except Exception:
         deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
 
-    # Cloud Mode: Fetch data via SQLAlchemy from Supabase PostgreSQL
     if deploy_mode == "cloud":
         try:
             db_config = getattr(env, "active_db_config", None)
-            
-            # Comprehensive extraction from DBCredentials dataclass or fallback to os.getenv
-            user = (
-                getattr(db_config, "user", None) or 
-                getattr(db_config, "db_user", None) or 
-                os.getenv("WAID_DB_USER")
-            )
-            password = (
-                getattr(db_config, "password", None) or 
-                getattr(db_config, "db_password", None) or 
-                os.getenv("WAID_DB_PASSWORD")
-            )
-            host = (
-                getattr(db_config, "host", None) or 
-                getattr(db_config, "db_host", None) or 
-                os.getenv("WAID_DB_HOST")
-            )
-            port = (
-                getattr(db_config, "port", None) or 
-                getattr(db_config, "db_port", "6543") or 
-                os.getenv("WAID_DB_PORT", "6543")
-            )
-            dbname = (
-                getattr(db_config, "dbname", None) or 
-                getattr(db_config, "db_name", "postgres") or 
-                os.getenv("WAID_DB_NAME", "postgres")
-            )
+            user = getattr(db_config, "user", None) or getattr(db_config, "db_user", None) or os.getenv("WAID_DB_USER")
+            password = getattr(db_config, "password", None) or getattr(db_config, "db_password", None) or os.getenv("WAID_DB_PASSWORD")
+            host = getattr(db_config, "host", None) or getattr(db_config, "db_host", None) or os.getenv("WAID_DB_HOST")
+            port = getattr(db_config, "port", None) or getattr(db_config, "db_port", "6543") or os.getenv("WAID_DB_PORT", "6543")
+            dbname = getattr(db_config, "dbname", None) or getattr(db_config, "db_name", "postgres") or os.getenv("WAID_DB_NAME", "postgres")
 
-            missing = []
-            if not user: missing.append("user")
-            if not password: missing.append("password")
-            if not host: missing.append("host")
+            if not all([user, password, host]):
+                return []
 
-            if missing:
-                st.error(f"Missing Supabase credentials in environment: {', '.join(missing)}")
+            supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
+            engine = create_engine(supabase_url, poolclass=NullPool)
+
+            query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {env.db_schema_target}.public_forecasts ORDER BY target_date DESC;")
+            with engine.connect() as conn:
+                df_dates = pd.read_sql_query(query, conn)
+
+            if not df_dates.empty:
+                return df_dates['target_date'].astype(str).tolist()
+        except Exception as e:
+            st.error(f"Error fetching dates from Supabase: {e}")
+            return []
+    else:
+        base_dir = Path(__file__).resolve().parent
+        cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
+        local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
+        db_path = cloud_deploy_db if cloud_deploy_db.exists() else (local_deploy_db if local_deploy_db.exists() else None)
+
+        if not db_path or not db_path.exists():
+            return []
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                query = "SELECT DISTINCT DATE(timestamp) AS target_date FROM public_forecasts ORDER BY target_date DESC"
+                df_dates = pd.read_sql_query(query, conn)
+                if not df_dates.empty:
+                    return df_dates['target_date'].astype(str).tolist()
+        except Exception as e:
+            st.error(f"Error fetching dates from SQLite: {e}")
+            return []
+
+    return []
+
+@st.cache_data(ttl=300)
+def load_public_data_for_day(target_date: str) -> pd.DataFrame:
+    """
+    @brief Loads analytics data exclusively for the specified target date.
+    
+    @param target_date Target date string in YYYY-MM-DD format.
+    @return Cleaned pandas DataFrame containing day specific metrics and forecasts.
+    """
+    try:
+        env = WaidBoot()
+        deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
+    except Exception:
+        deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+
+    start_ts = f"{target_date} 00:00:00"
+    end_ts = f"{target_date} 23:59:59"
+
+    if deploy_mode == "cloud":
+        try:
+            db_config = getattr(env, "active_db_config", None)
+            user = getattr(db_config, "user", None) or getattr(db_config, "db_user", None) or os.getenv("WAID_DB_USER")
+            password = getattr(db_config, "password", None) or getattr(db_config, "db_password", None) or os.getenv("WAID_DB_PASSWORD")
+            host = getattr(db_config, "host", None) or getattr(db_config, "db_host", None) or os.getenv("WAID_DB_HOST")
+            port = getattr(db_config, "port", None) or getattr(db_config, "db_port", "6543") or os.getenv("WAID_DB_PORT", "6543")
+            dbname = getattr(db_config, "dbname", None) or getattr(db_config, "db_name", "postgres") or os.getenv("WAID_DB_NAME", "postgres")
+
+            if not all([user, password, host]):
                 return pd.DataFrame()
 
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
 
-            query = f"SELECT * FROM {env.db_schema_target}.public_forecasts ORDER BY timestamp ASC;"
-            df = pd.read_sql_query(query, engine)
+            query = text(f"""
+                SELECT * FROM {env.db_schema_target}.public_forecasts 
+                WHERE timestamp >= :start_ts AND timestamp <= :end_ts 
+                ORDER BY timestamp ASC;
+            """)
+            df = pd.read_sql_query(query, engine, params={"start_ts": start_ts, "end_ts": end_ts})
 
         except Exception as e:
             st.error(f"Supabase connection error: {e}")
             return pd.DataFrame()
 
-    # Local Mode: Fetch data from SQLite database
     else:
         base_dir = Path(__file__).resolve().parent
         cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
         local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
+        db_path = cloud_deploy_db if cloud_deploy_db.exists() else (local_deploy_db if local_deploy_db.exists() else None)
         
-        if cloud_deploy_db.exists():
-            db_path = cloud_deploy_db
-        elif local_deploy_db.exists():
-            db_path = local_deploy_db
-        else:
-            try:
-                db_path = Path(env.deploy_dir) / "data" / env.deploy_db_file
-            except Exception:
-                return pd.DataFrame()
-        
-        if not db_path.exists():
+        if not db_path or not db_path.exists():
             return pd.DataFrame()
 
         try:
             with sqlite3.connect(db_path) as conn:
-                df = pd.read_sql_query("SELECT * FROM public_forecasts ORDER BY timestamp ASC", conn)
+                query = "SELECT * FROM public_forecasts WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC"
+                df = pd.read_sql_query(query, conn, params=(start_ts, end_ts))
         except Exception as e:
             st.error(f"Local SQLite database error: {e}")
             return pd.DataFrame()
@@ -250,66 +276,54 @@ def run_dashboard(env: WaidBoot) -> None:
 
     st.title("WAID — Public Operational & Quality Monitor")
     
-    df = load_public_data()
-    if df.empty:
-        st.warning("Public analytics database not found or empty.")
-        return
-    
-    # Robust timestamp parsing with explicit UTC localization and conversion to local timezone
-    df['ts_target'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    if df['ts_target'].dt.tz is None:
-        df['ts_target'] = df['ts_target'].dt.tz_localize('UTC')
-    
-    target_tz = env.tz_timezone
-    df['ts_target'] = df['ts_target'].dt.tz_convert(target_tz).dt.tz_convert(None)  
-
-    for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
-        if f'pred_{k}' in df.columns and f'diff_{k}' in df.columns:
-            # Reconstruct Actual = Pred - Diff
-            raw_actual = df[f'pred_{k}'] - df[f'diff_{k}']
-            
-            if k in ['wind', 'rain', 'solar']:
-                # Zero-bounded features (>= 0.0)
-                df[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0)
-            elif k == 'rh':
-                # Relative Humidity bounded strictly between 0% and 100%
-                df[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0, upper=100.0)
-            else:
-                # Temperature and Pressure (no hard zero boundary)
-                df[f'ecowitt_{k}'] = raw_actual
-
-    # UI Filtering
-    df['date_str'] = df['ts_target'].dt.strftime('%Y-%m-%d')
-    available_dates = sorted(df['date_str'].dropna().unique().tolist(), reverse=True)
-    
+    available_dates = get_available_dates()
     if not available_dates:
-        st.warning("No valid dates found in the dataset.")
+        st.warning("Public analytics database not found or empty.")
         return
 
     today_str = pd.Timestamp.now().strftime('%Y-%m-%d')
     default_index = available_dates.index(today_str) if today_str in available_dates else 0
 
     st.sidebar.header("Configuration")
-    selected_date = st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
+    selected_date = st.sidebar.sidebar if False else st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
 
-    # Estraggo la data massima con dati ERA5 presenti
-    era5_available = df[df['temp_era5'].notnull()]['ts_target']
-
-    if not era5_available.empty:
-        max_era5_str = era5_available.max().strftime('%Y-%m-%d')
-        st.sidebar.info(
-            f"**ERA5 Latency Note:**\n\n"
-            f"ERA5 reanalysis data typically has a ~7-day publication delay.\n\n"
-            f"📅 **Latest Available Ground Truth:** `{max_era5_str}`\n\n"
-            f"Select dates up to this day to inspect ERA5 benchmark metrics."
-        )
-    else:
-        st.sidebar.warning("⚠️ No ERA5 ground truth data currently available.")
-    
-    df_day = df[df['date_str'] == selected_date].copy()
+    df_day = load_public_data_for_day(selected_date)
     if df_day.empty:
         st.warning(f"No data available for {selected_date}.")
         return
+
+    # Robust timestamp parsing with explicit UTC localization and conversion to local timezone
+    df_day['ts_target'] = pd.to_datetime(df_day['timestamp'], errors='coerce')
+    if df_day['ts_target'].dt.tz is None:
+        df_day['ts_target'] = df_day['ts_target'].dt.tz_localize('UTC')
+    
+    target_tz = env.tz_timezone
+    df_day['ts_target'] = df_day['ts_target'].dt.tz_convert(target_tz).dt.tz_convert(None)  
+
+    for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
+        if f'pred_{k}' in df_day.columns and f'diff_{k}' in df_day.columns:
+            # Reconstruct Actual = Pred - Diff
+            raw_actual = df_day[f'pred_{k}'] - df_day[f'diff_{k}']
+            
+            if k in ['wind', 'rain', 'solar']:
+                # Zero-bounded features (>= 0.0)
+                df_day[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0)
+            elif k == 'rh':
+                # Relative Humidity bounded strictly between 0% and 100%
+                df_day[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0, upper=100.0)
+            else:
+                # Temperature and Pressure (no hard zero boundary)
+                df_day[f'ecowitt_{k}'] = raw_actual
+
+    # Estraggo la presenza di ERA5 sui dati caricati del giorno
+    era5_available = df_day[df_day['temp_era5'].notnull()]['ts_target'] if 'temp_era5' in df_day.columns else pd.Series()
+
+    if not era5_available.empty:
+        st.sidebar.info(
+            f"**ERA5 Status:** Ground truth ERA5 data available for selected day `{selected_date}`."
+        )
+    else:
+        st.sidebar.warning("⚠️ No ERA5 ground truth data currently available for this day.")
 
     st.markdown(f"### Operational Analysis for Target Date: **{selected_date}**")
 
@@ -435,7 +449,7 @@ def main() -> int:
                     "    python src/waid_08_1_viz_streamlit_app.py\n"
                     "\n"
                     "Run it instead with:\n"
-                    "    streamlit run waid_08_2_viz_streamlit_app.py\n"
+                    "    streamlit run waid_08_1_viz_streamlit_app.py\n"
                     "or\n"
                     "    ./src/waid_08_1_viz_streamlit_app.py --deploy\n"
                 )

@@ -1,38 +1,41 @@
-#!/usr/bin/env bash
+#!/bin/bash
+/**
+ * @file start-arm.sh
+ * @brief Bootstrapping and volume permission initialization script for WAID pipeline on ARM architecture.
+ * @details Resolves runtime UID/GID variables, verifies host directory structure for Docker bind mounts, 
+ *          launches Docker Compose services, and aligns dbt workspace execution permissions.
+ * @author AF
+ * @date 2026
+ */
 set -e
 
-# Resolve script directory and determine project root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+export WAID_UID=$(id -u)
+export WAID_GID=$(id -g)
 
-# Ensure WAID_SOURCE is defined
-if [ -z "${WAID_SOURCE}" ]; then
-    export WAID_SOURCE="${PROJECT_ROOT}"
-    echo "WAID_SOURCE not set. Defaulting to: ${WAID_SOURCE}"
-fi
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$PROJECT_DIR"
 
-# Load environment configuration if available
-if [ -f "${WAID_SOURCE}/config/waid.env" ]; then
-    set -a
-    source "${WAID_SOURCE}/config/waid.env"
-    set +a
-fi
+VOLUMES_DIRS=(
+  "data"
+  "logs"
+  "config"
+  "deploy"
+  "dbt/target"
+  "dbt/logs"
+)
 
-cd "${WAID_SOURCE}"
+echo "[WAID-BOOT] Checking host volume permissions..."
+for dir in "${VOLUMES_DIRS[@]}"; do
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir"
+  fi
+done
 
-COMPOSE_FILE="docker/arm/docker-compose.yml"
+# Launching container services
+docker compose -f docker/arm/docker-compose.yml up -d
 
-# Se viene passato "down" come primo argomento, esegui il tear down
-if [ "$1" = "down" ]; then
-    shift
-    echo "Stopping WAID container on ARM using WAID_SOURCE=${WAID_SOURCE}..."
-    docker compose -f "${COMPOSE_FILE}" down "$@"
-else
-    echo "Starting WAID container on ARM using WAID_SOURCE=${WAID_SOURCE}..."
-    # Se nessun argomento è passato, di default fa "up -d"
-    if [ $# -eq 0 ]; then
-        docker compose -f "${COMPOSE_FILE}" up -d
-    else
-        docker compose -f "${COMPOSE_FILE}" up "$@"
-    fi
-fi
+# Idempotent permission fix inside container context
+echo "[WAID-BOOT] Aligning container dbt directory permissions..."
+docker compose -f docker/arm/docker-compose.yml exec -u root waid-arm bash -c "chown -R ${WAID_UID}:${WAID_GID} /app/dbt && chmod -R 775 /app/dbt"
+
+echo "[WAID-BOOT] Environment ready."
