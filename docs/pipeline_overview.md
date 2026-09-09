@@ -124,6 +124,107 @@ Automated Python ingestion script that downloads raw weather observations direct
 
 The script is designed to be idempotent, fault-tolerant, and safe for downstream ETL processing, preventing incomplete or corrupted downloads from being consumed as valid input.
 
+### `waid_01_2_ingest_era5.py`
+Python script designed to download and consolidate atmospheric reanalysis data from the Copernicus Climate Data Store (CDS). It extracts NetCDF matrices aligned with UTC timestamp standards and targeted geographic coordinates for integration into the WAID pipeline. It manages:
+
+- **Configuration & Environment Setup:**
+    - Injects custom configuration paths into the Python execution environment using `WAID_SOURCE`.
+    - Instantiates system context and validates credentials via `WaidBoot`.
+    - Validates command-line arguments including target month (--period), coordinates (--lat, --lon), and elevation (--elevation).
+- **CDS API Operations:**
+    - Connects to Copernicus CDS using cdsapi.Client with dynamic API URL and key configuration.
+    - Generates a 0.5° Bounding Box centered around target coordinates.
+    - Retrieves hourly single-level reanalysis parameters (*2m_temperature, 2m_dewpoint_temperature, surface_pressure, 10m_u_component_of_wind, 10m_v_component_of_wind, surface_solar_radiation_downwards, total_precipitation, geopotential*).
+- **Data Stream Processing & Merging:**
+    - Detects and handles server-side multi-file ZIP encapsulation.
+    - Merges disparate NetCDF file streams using xarray.merge into a single consolidated NetCDF file.
+    - Evaluates dataset completeness against total calendar days in the month to finalize full month archives (.full).
+- **Caching & Resilience:**
+    - Skips execution if a verified full-month file is already present.
+    - Cleans up temporary extraction directories and partial files on error.
+    - Gracefully handles server-side data unavailability without breaking downstream execution pipelines.
+
+This script serves as the primary atmospheric data ingestion component, ensuring synchronized meteorological reanalysis matrices are available for downstream telemetry matching and processing.
+
+### `waid_01_3_profile_era5.py`  
+Python profiling and validation script for ERA5 NetCDF reanalysis files within the WAID pipeline. It inspects dataset structures, validates coordinate boundaries, performs data quality checks on extracted localized time series, and logs statistical summaries. It manages:
+
+* **Environment & Argument Parsing**:
+    * Injects configuration dependencies via `WAID_SOURCE` and validates target periods using `validate_period`.
+    * Configures command-line argument parsing for `--period` in `YYYY-MM` format.
+* **Dataset Inspection & Metadata Extraction**:
+    * Evaluates file availability across standard `.nc` or finalized `.full` NetCDF dataset paths.
+    * Extracts dimensions and inspects variable attributes including variable names, measurement units, and long names.
+    * Validates latitude and longitude ranges against target coordinates defined in `.env` (`env.ecowitt_latitude`, `env.ecowitt_longitude`).
+* **Data Quality & Point Extraction**:
+    * Selects nearest spatial grid points based on station coordinates using `xarray.Dataset.sel`.
+    * Converts multi-variable dataset slices into a Pandas `DataFrame`.
+    * Performs NaN count checks to detect missing data or potential corruption.
+* **Statistical Profiling & Latency Tracking**:
+    * Generates basic summary statistics (`min`, `max`, `mean`) and prints sample data previews.
+    * Calculates time lag in days between current time and the most recent valid observation for partial month files.
+
+This script acts as a data quality assurance component, verifying structural integrity and detecting completeness or corruption in ERA5 NetCDF files before downstream ingestion.
+
+### `waid_02_1_sync_ecowitt.py`
+Python batch aggregation script designed to parse, normalize, and sync local Ecowitt weather station CSV data into a central SQLite database. It handles local timezone conversion to UTC, guarantees database schema integrity, and performs idempotent batch upserts. It manages:
+* **Schema Validation & Database Setup**:
+    * Initializes the destination SQLite table dynamically based on configuration variables (`env.ecowitt_table` and `env.waid_db`).
+    * Maps raw CSV header names to standardized SQLite database column names.
+    * Enforces primary key constraints on standard ISO timestamp strings and Unix epoch numerical values.
+* **Timezone Normalization & Parsing**:
+    * Parses naive local timestamp strings and localizes them using the configured system timezone (`env.tz_timezone`).
+    * Converts localized local time series directly to standardized UTC datetime representations (`YYYY-MM-DD HH:MM:SS`) and Unix epoch timestamps.
+    * Handles time transitions and invalid local date strings by dropping `NaT` instances.
+* **File System Ingestion & Staging**:
+    * Selects between standard `.csv` files for active current-month syncs and finalized `.full` files for historical periods.
+    * Stages parsed telemetry records temporarily in a dedicated SQLite staging table (`staging_ecowitt`).
+* **Data Synchronization & Upserts**:
+    * Filters and matches DataFrame column structures against active database target schemas.
+    * Performs idempotent batch upserts using `INSERT OR IGNORE` queries to prevent duplicate records.
+    * Cleans up temporary staging tables upon completion or execution failure.
+
+This script serves as the primary weather station telemetry ingestion component, standardizing disparate raw local telemetry into a persistent relational SQLite store for pipeline integration.
+
+### `waid_03_1_match_datasets.py`
+Python synchronization and alignment script that merges station telemetry with ERA5 atmospheric reanalysis data into a central Feature Store. It resamples local station measurements to hourly intervals, extracts grid data from NetCDF files, and performs a left-join to decouple station telemetry freshness from ERA5 latency. It manages:
+
+* **Feature Store Table Initialization**:
+    * Verifies and creates the target match table (`env.ml_matches_table`) in the SQLite database (`env.waid_db`) with defined schemas for station and ERA5 parameters.
+* **ERA5 Data Extraction & Parameter Calculation**:
+    * Extracts target coordinate grid time series from ERA5 NetCDF files (`.nc` or `.full`) using `xarray.Dataset.sel`.
+    * Converts physical units including temperature from Kelvin to Celsius (`t2m`, `d2m`), pressure to hPa (`sp`), solar radiation to W/m² (`ssrd`), and total precipitation to mm (`tp`).
+    * Derives relative humidity (`rh_era5`) using the Magnus-Tetens formula via `calculate_rh`.
+    * Computes wind speed magnitude from vector components (`u10`, `v10`).
+* **Telemetry Resampling & Left-Join Alignment**:
+    * Queries station telemetry using `fetch_and_resample_ecowitt` for specified monthly time ranges.
+    * Aligns timestamps to standardized hourly intervals and performs a left-join (`df_match`) between station telemetry and ERA5 reanalysis data.
+    * Populates ERA5 benchmark fields with `NaN` when ERA5 files are unavailable.
+* **Bias Calculation & Checkpoint Persistence**:
+    * Computes mean measurement biases (`bias_temp`, `bias_pres`, `bias_rh`, `bias_wind`, `bias_solar`, `bias_rain`) when running in debug mode.
+    * Exports aligned monthly datasets as CSV checkpoints to `env.ml_matches_dir`.
+    * Clears overlapping historical date ranges and performs batch inserts (`INSERT OR REPLACE`) into the SQLite Feature Store.
+
+This script serves as the primary data transformation and alignment engine, unifying raw station telemetry and reanalysis data into a feature table for downstream machine learning and analytics.
+
+### `waid_04_1_setup_specs.py`
+Python setup script designed to initialize, profile, and persist empirical sensor specifications into the station metadata storage. It analyzes recent station telemetry to derive physical resolution and deadband thresholds for primary features, falling back to predefined hardware specifications when data is insufficient. It manages:
+
+* **Database Schema Maintenance**:
+    * Inspects `station_metadata` table columns via `PRAGMA table_info`.
+    * Executes an `ALTER TABLE` query to add the `sensor_specs` column when missing.
+* **Empirical Sensor Profiling**:
+    * Queries raw telemetry records from `ecowitt_records` for a 14-day trailing window.
+    * Calculates physical resolution metrics based on non-zero delta percentiles (`np.percentile`) across target feature fields.
+    * Estimates custom operational deadbands for specific sensor types, such as minimum thresholds for wind speed and tip sensitivity for rainfall.
+* **Default Specifications & Persistence**:
+    * Provides default hardware specification structures (`resolution`, `deadband`) for core features (`ecowitt_temp`, `ecowitt_rh`, `ecowitt_pres`, `ecowitt_wind`, `ecowitt_solar`, `ecowitt_rain`).
+    * Serializes calculated or default sensor specification mappings into JSON format.
+    * Updates the `station_metadata` table for the active station ID (`env.ecowitt_station_id`) with serialized specifications.
+
+This script acts as a hardware profiling component, supplying empirical sensor resolution limits and operational noise thresholds required by downstream data processing and modeling tasks.
+
+
 ### `waid_05_1_ml_tensors.py`
 
 Python pre-processing module responsible for extracting local weather telemetry from SQLite and assembling 3D feature tensors (X) and target delta tensors (Y) for training multi-step weather nowcasting machine learning models. It manages:
@@ -425,7 +526,25 @@ Centralized orchestration launcher and command-line entry point for running WAID
 
 The script provides a unified command-line interface for local, Edge/ARM, and Prefect-based WAID execution, allowing operators to switch between lightweight resource-constrained deployments and the full Prefect orchestration environment.
 
+
+### `start-arm.sh`
+This is a shell script designed for bootstrapping and initializing host volume permissions for the WAID pipeline running on ARM architecture. It prepares the local environment, starts the required Docker Compose services, and manages container-level file permissions. It manages:
+
+- Environment Initialization:
+    - Resolves current host runtime identity by exporting `WAID_UID` and `WAID_GID` variables.
+    - Navigates automatically to the project root directory.
+- Host Volume Setup:
+    - Verifies and creates necessary host directory structures for Docker bind mounts (data, logs, config, deploy, dbt/target, dbt/logs).
+- Container Service Orchestration:
+    - Launches containerized services in detached mode using 
+    `docker compose -f docker/arm/docker-compose.yml up -d.`
+- Permissions Alignment:
+    - Executes an idempotent permission alignment command as root inside the waid-arm container to set `chown -R and chmod -R 775` on /app/dbt, ensuring proper workspace execution rights for host user mapping.
+
+**This script acts as the entrypoint bootstrap utility for launching and synchronizing the environment permissions of the ARM-based Docker deployment.**
+
 ---
+
 ## Pipeline Execution Log
 
 All WAID logs are available in the logs directory at the root of the project.
@@ -477,7 +596,7 @@ It automates the preparation and container build process for the WAID platform a
 
 ### deploy-arm.sh
 
-It automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device (e.g., Raspberry Pi). It handles local environment validation, database optimization, Docker ARM64 image building, artifact bundling, SCP transfer, and remote container orchestration via SSH.
+It automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device. It handles local environment validation, database optimization, Docker ARM64 image building, artifact bundling, SCP transfer, and remote container orchestration via SSH.
 
 **Usage:**
 ```

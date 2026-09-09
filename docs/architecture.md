@@ -7,38 +7,52 @@
 The architecture separates **data processing, machine learning, orchestration, storage, and visualization**, allowing the platform to adapt to different operational environments without changing the underlying forecasting pipeline.
 
 ```text
-              ┌────────────────────────────────────────────────────────────────────────┐
-              │                        WAID ARCHITECTURE FLOW                          │
-              └────────────────────────────────────────────────────────────────────────┘
-
-              [ INPUT DATA ]
-              ├── Ecowitt Station Telemetry (Real-Time)
-              ├── ERA5 Reanalysis / Satellite Data
-              └── Deterministic Solar Physics Signal ───┐
-              (Timestamp + Lat/Lon + Day of Year)       │
-                                                        ▼
-                                          ┌────────────────────────────┐
-                                          │    TENSOR CONSTRUCT        │
-                                          └──────────────┬─────────────┘
-                                                         │
-                                                         ▼
-                                          ┌────────────────────────────┐
-                                          │    6-HOUR LSTM MODEL       │
-                                          └──────────────┬─────────────┘
-                                                         │
-                                                         ▼
-              [ EDGE EXECUTION ] ◄───────────────────────┘
-              ├── ARM64 Board (Lightweight Daemon: waid_scheduler_lab)
-              └── Local SQLite Buffer (Fault-Tolerant)
-                                                        │
-                                                        ▼ (ETL Sync)
-              [ CLOUD STORAGE ]
-              └── Supabase PostgreSQL Warehouse (prod schema)
-                                                        │
-                                                        ▼
-              [ ANALYTICS & RECONCILIATION ]
-              ├── Streamlit Live Dashboard (waid-analytics.streamlit.app)
-              └── Error Analysis Loop (MAE, Bias, Sensor Drift vs ERA5)
+WAID ARCHITECTURE
+       |
+       v
+Input data
+       |
+       +-- Ecowitt telemetry
+       |
+       +-- ERA5 / satellite
+       |
+       +-- Solar physics signal
+       |   +-- Timestamp
+       |   +-- Lat/Lon
+       |   +-- Day of Year
+       |
+       v
+Tensor construct
+       |
+       v
+6-hour LSTM model
+       |
+       v
+Edge execution
+       |
+       +-- ARM64
+       +-- Scheduler
+       +-- SQLite buffer
+       |
+       v
+ETL sync
+       |
+       v
+Cloud storage
+       |
+       +-- Supabase
+       +-- PostgreSQL
+       +-- prod schema
+       |
+       v
+Analytics
+       |
+       +-- Streamlit Live Dashboard
+       |
+       +-- Error Analysis
+           +-- MAE
+           +-- Bias
+           +-- Sensor Drift vs ERA5
 ```
 
 ## Why the Future of Weather Forecasting Isn't in the Cloud: Lessons from the WAID Project
@@ -166,42 +180,34 @@ To ensure high availability and mobile stability, operational outputs are extrac
  At a high level, the architecture follows this processing chain:
 
 ```text
-                            Weather Station / External Data
-                                          │
-                                          ▼
-                                   Data Ingestion
-                                          │
-                                          ▼
-                                   SQLite / Raw Data
-                                          │
-                                          ▼
-                                 dbt Transformations
-                                          │
-                                          ▼
-                               Matching & Bias Analysis
-                                          │
-                                          ▼
-                                ML Feature Engineering
-                                          │
-                                          ▼
-                                    Model Training
-                                          │
-                                          ▼
-                                ML Inference / Forecast
-                                          │
-                                          ▼
-                                  Forecast Evaluation
-                                          │
-                                          ▼
-                                   Public Data Export
-                                      ┌───┴────┐
-                                      │        │
-                                      ▼        ▼
-                                   SQLite   PostgreSQL
-                                   (Local)   (Cloud)
-                                      │        │
-                                      ▼        ▼
-                            Local Streamlit   Streamlit Cloud
+Weather Station / External Data
+              │
+              ▼
+         Data Ingestion
+              │
+              ▼
+        SQLite / Raw Data
+              │
+              ▼
+       dbt Transformations
+              │
+              ▼
+     Matching & Bias Analysis
+              │
+              ▼
+     ML Feature Engineering
+              │
+              ▼
+        Model Training
+              │
+              ▼
+     ML Inference / Forecast
+              │
+              ▼
+      Forecast Evaluation
+              │
+              ▼
+       Public Data Export
 ```
 
 ### Host vs. Edge Architecture
@@ -209,25 +215,30 @@ To ensure high availability and mobile stability, operational outputs are extrac
  The main architectural distinction is therefore the **execution environment rather than the forecasting logic**:
 
 ```text
-                                    WAID Pipeline
-                                           │
-                            ┌──────────────┴──────────────┐
-                            │                             │
-                        Host / PC                     ARM Edge
-                            │                             │
-                      Prefect Stack              Lightweight Scheduler
-                            │                             │
-                            └──────────────┬──────────────┘
-                                           │
-                                   Same Core Pipeline
-                                           │
-                                  ┌────────┴────────┐
-                                  │                 │
-                                Local             Cloud
-                                SQLite          PostgreSQL
-                                  │                 │
-                                  ▼                 ▼
-                            Local Streamlit    Streamlit Cloud
+WAID Pipeline
+      |
+      +-- Host / PC
+      |    |
+      |    +-- Prefect Stack
+      |
+      +-- ARM Edge
+           |
+           +-- Lightweight Scheduler
+      |
+      v
+Same Core Pipeline
+      |
+      +-- Local
+      |    |
+      |    +-- SQLite
+      |         |
+      |         +-- Local Streamlit
+      |
+      +-- Cloud
+           |
+           +-- PostgreSQL
+                |
+                +-- Streamlit Cloud
 ```
 
  The architecture therefore supports a **single forecasting pipeline with multiple execution and publication strategies**, rather than maintaining separate application implementations for host and Edge environments.
@@ -256,27 +267,41 @@ To ensure high availability and mobile stability, operational outputs are extrac
 ### Database Target & Execution Mode Architecture
 
 The WAID platform uses a dual-tier configuration model to manage data persistence and dashboard rendering across development, staging, and production environments. This decoupling is governed by two key environment variables: `WAID_DB_SCHEMA_TARGET` and `WAID_DEPLOY_MODE`.
+
 ```text
-                            ┌─────────────────────────────────────────┐
-                            │          Streamlit Dashboard            │
-                            └────────────────────┬────────────────────┘
-                                                 │
-                                   Is WAID_DEPLOY_MODE = cloud?
-                                                 / \
-                                          Yes /     \ No
-                                          /         \
-                                          ▼           ▼
-                            ┌───────────────────┐       ┌───────────────────┐
-                            │ Supabase Postgres │       │   SQLite Local    │
-                            │   (Cloud Mode)    │       │   (Local Mode)    │
-                            └─────────┬─────────┘       └───────────────────┘
-                                   │
-                     Target Schema (WAID_DB_SCHEMA_TARGET)
-                     ┌───────────────┼───────────────┐
-                     ▼               ▼               ▼
-              ┌─────────┐     ┌─────────┐     ┌─────────┐
-              │  draft  │     │  prod   │     │  retro  │
-              └─────────┘     └─────────┘     └─────────┘
+STREAMLIT DASHBOARD
+        |
+        v
+WAID_DEPLOY_MODE = cloud ?
+        |
+        +-- YES
+        |    |
+        |    v
+        |  Supabase
+        |  Postgres
+        |    |
+        |    v
+        |  Cloud Mode
+        |
+        +-- NO
+             |
+             v
+           SQLite
+           Local
+             |
+             +-- Local Mode
+
+        |
+        v
+TARGET SCHEMA
+        |
+        +-- WAID_DB_SCHEMA_TARGET
+             |
+             +-- draft
+             |
+             +-- prod
+             |
+             +-- retro
 ```
 **1. Target Schema Selection (`WAID_DB_SCHEMA_TARGET`)**
 The `WAID_DB_SCHEMA_TARGET` variable dictates the logical PostgreSQL schema target within Supabase where the ingestion, dbt models, and inference pipelines read and write data.

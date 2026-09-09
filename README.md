@@ -108,22 +108,23 @@ The two components work together to provide a complete execution lifecycle:
 
 ```text
 Prefect Server
-      │
-      ▼
+    |
+    v
 waid_prefect_manager.py
-      │
-      ├── Work Pool
-      ├── Deployments
-      └── Worker
-            │
-            ▼
-     waid_orchestrate.py
-            │
-            ├── Data Ingestion
-            ├── dbt Transformations
-            ├── Data Matching & Bias
-            ├── ML Training / Inference
-            └── Visualization & Deployment
+    |
+    +-- Work Pool
+    +-- Deployments
+    +-- Worker
+          |
+          v
+    waid_orchestrate.py
+      |
+      +-- Data Ingestion
+      +-- dbt Transformations
+      +-- Data Matching & Bias
+      +-- ML Training / Inference
+      +-- Visualization & Deployment
+
 ```
 
 This architecture provides scheduled execution, workflow monitoring, retry/error handling, and modular pipeline orchestration while keeping infrastructure management separate from the actual WAID processing logic.
@@ -147,9 +148,6 @@ Long-running operational daemon and retroactive simulation driver for the WAID p
 Unlike the Prefect-based orchestration stack, this lightweight scheduler is specifically designed for Edge deployments on ARM devices and other resource-constrained hardware. Prefect provides advanced workflow orchestration and monitoring capabilities but introduces additional memory and runtime overhead that may be unsuitable for low-resource environments. The Edge architecture therefore relies on direct subprocess execution and a lightweight scheduling loop through waid_scheduler_lab.py and waid_orchestrate_lab.py, providing a significantly more resource-efficient way to run the complete WAID pipeline.
 
 For more information about the ARM-compatible Docker deployment, see the ARM Docker Deployment section.
-
-
-
 
 ---
 
@@ -312,8 +310,4 @@ The framework is organized into modular steps and orchestration utilities spanni
 * **Incremental Forecast Reconciliation:** Automatically updates past predictions with real telemetry as new readings become available to evaluate live drift.
 * **Resilient Live Fallbacks:** Built-in fault tolerance for network delays, timestamp microsecond normalization, and boundary-checked physical metric clipping (e.g., solar radiation and precipitation bounds).
 * **Deterministic Deployment:** Fully automated model artifact registry storing scaler pipelines, versioned network weights, and reproducible evaluation benchmarks.
-
-```
-
-```
 

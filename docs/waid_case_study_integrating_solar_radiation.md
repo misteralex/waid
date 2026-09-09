@@ -1,4 +1,4 @@
-# Case Study: Integrating Solar-Radiation Physics into Edge Weather Nowcasting
+# WAID Case Study: Integrating Solar-Radiation Physics into Edge Weather Nowcasting
 
 ## From Data-Driven Forecasting to Physics-Informed Inference
 
@@ -18,33 +18,33 @@ The objective is not to replace atmospheric modelling with a simplified physical
 The WAID inference pipeline combines observed telemetry, engineered temporal features, and a deterministic theoretical solar-radiation signal before passing the resulting tensor to the LSTM model.
 
 Conceptually:
+
 ```text
 Local telemetry
-      │
-      ├── Temperature
-      ├── Humidity
-      ├── Pressure
-      ├── Wind
-      └── Other observations
-      │
-      ▼
+      |
+      +-- Temperature
+      +-- Humidity
+      +-- Pressure
+      +-- Wind
+      +-- Other observations
+      |
+      v
 Temporal feature engineering
-      │
-      ├── Cyclic time features
-      │
-      └── Theoretical solar radiation
-                  │
-                  ▼
-          Inference tensor
-                  │
-                  ▼
-                LSTM
-                  │
-                  ▼
-            6-hour forecast
-                  │
-                  ▼
-       Live observation/reconciliation
+      |
+      +-- Cyclic time features
+      +-- Theoretical solar radiation
+      |
+      v
+Inference tensor
+      |
+      v
+    LSTM
+      |
+      v
+6-hour forecast
+      |
+      v
+Live observation/reconciliation
 ```
 
 The important architectural property is that the theoretical solar signal is generated at inference time.

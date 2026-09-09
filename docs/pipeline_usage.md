@@ -647,7 +647,7 @@ It automates the preparation and container build process for the WAID platform a
 
 ### deploy-arm.sh
 
-It automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device (e.g., Raspberry Pi). It handles local environment validation, database optimization, Docker ARM64 image building, artifact bundling, SCP transfer, and remote container orchestration via SSH.
+It automates the end-to-end packaging, cross-compilation, network transfer, and remote deployment of the WAID platform to an ARM-based target device. It handles local environment validation, database optimization, Docker ARM64 image building, artifact bundling, SCP transfer, and remote container orchestration via SSH.
 
 **Usage:**
 ```
