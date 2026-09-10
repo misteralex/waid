@@ -142,7 +142,7 @@ Long-running operational daemon and retroactive simulation driver for the WAID p
 - Retroactive simulation mode through --retroactive, iterating through historical timestamp intervals defined by --mock-begin and --mock-end.
 - Incremental simulation execution at each historical step using --skip-ingestion-deploy.
 - Final publication after retroactive simulation through waid_08_1_viz_streamlit_app.
-- Continuous operational execution through a recurring loop based on env.scheduled_interval_sec, running incremental updates and ML forecasts and sleeping between scheduled executions.
+- Continuous operational execution through a recurring loop based on env.scheduled_interval_hours, running incremental updates and ML forecasts and sleeping between scheduled executions.
 - The module provides the lightweight execution and scheduling layer for the WAID platform, coordinating the complete pipeline from data ingestion through machine learning, forecast evaluation, visualization, and documentation.
 
 Unlike the Prefect-based orchestration stack, this lightweight scheduler is specifically designed for Edge deployments on ARM devices and other resource-constrained hardware. Prefect provides advanced workflow orchestration and monitoring capabilities but introduces additional memory and runtime overhead that may be unsuitable for low-resource environments. The Edge architecture therefore relies on direct subprocess execution and a lightweight scheduling loop through waid_scheduler_lab.py and waid_orchestrate_lab.py, providing a significantly more resource-efficient way to run the complete WAID pipeline.

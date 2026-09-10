@@ -146,14 +146,14 @@
 ## 🏗️ Model: `stg_matches`
 
 **Schema:** `main`  
-**Description:** Dataset unificato di validazione tra Ecowitt e ERA5
+**Description:** Unified validation dataset comparing Ecowitt local sensor observations and ERA5 reanalysis.
 
 | Column | Data Type | Description |
 | :--- | :--- | :--- |
 | **timestamp** | `None` |  |
 | **ecowitt_temp** | `None` |  |
 | **era5_temp** | `None` |  |
-| **bias_temp** | `None` | Differenza assoluta tra temperatura Ecowitt e ERA5 |
+| **bias_temp** | `None` | Calculated bias (difference) between Ecowitt and ERA5 temperature measurements. |
 
 ---
 

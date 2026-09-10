@@ -95,8 +95,18 @@ python src/waid_05_2_ml_train.py
 
 To execute the 6-hour weather inference pipeline (which reconstructs absolute meteorological values, enforces strict physics-safe guardrails, and updates the `inference_forecast` table with incremental consuntivo data), run the following command from the repository root:
 
+**Standard inference execution:**
 ```bash
 python src/waid_06_1_inference_forecast.py
+```
+**Telemetry-only mode execution (without ML prediction):**
+```bash
+python src/waid_06_1_inference_forecast.py --skip-ml
+```
+
+**Execution with simulated timestamp:**
+```bash
+python src/waid_06_1_inference_forecast.py --mock-now "2060-02-01 12:00:00"
 ```
 
 ### `waid_06_4_inference_quality.py`
@@ -180,6 +190,7 @@ python waid_orchestrate_lab.py [OPTIONS]
 | --run-mode | Set to 'incremental' (default) or 'backfill' (for multi-period historical processing). |
 | --skip-setup | Skips dbt setup steps (00_1 to 00_4) to save time during iteration. |
 | --skip-ingestion | Skips raw data ingestion and mock update steps. |
+| --skip-ml | Option forwarded to the `waid_06_1_inference_forecast.py` step. If not specified, it is also enabled automatically if the latest forecast is less than 6 hours old.
 | --only-setup | Runs only the dbt setup steps (00_1 to 00_4) and exit. |
 | --start-from | Fast-forwards execution directly to a specific step function name. |
 | --period | Specifies the target period (YYYY-MM) for the run. |
@@ -233,7 +244,7 @@ Weather-AI (WAID) integrates Prefect for robust workflow orchestration using a t
 Usage & Usage Example - Prerequisites
 - Python Version: Python 3.9
 - Dependencies: prefect (2.x), httpx, pyyaml, loguru, boot
-- Environment Variables: PREFECT_API_URL (default: [http://127.0.0.1:4200/api](http://127.0.0.1:4200/api)), SCHEDULER_INTERVAL_SEC (default: 3600).
+- Environment Variables: PREFECT_API_URL (default: [http://127.0.0.1:4200/api](http://127.0.0.1:4200/api)), SCHEDULER_INTERVAL_HOURS (default: 1).
 
 **Usage: python waid_prefect_manager.py [options]**
 

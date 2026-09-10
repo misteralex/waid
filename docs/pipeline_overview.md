@@ -431,7 +431,7 @@ Long-running operational daemon and retroactive simulation driver for the WAID p
 - Retroactive simulation mode through --retroactive, iterating through historical timestamp intervals defined by --mock-begin and --mock-end.
 - Incremental simulation execution at each historical step using --skip-ingestion-deploy.
 - Final publication after retroactive simulation through waid_08_1_viz_streamlit_app.
-- Continuous operational execution through a recurring loop based on env.scheduled_interval_sec, running incremental updates and ML forecasts and sleeping between scheduled executions.
+- Continuous operational execution through a recurring loop based on env.scheduled_interval_hours, running incremental updates and ML forecasts and sleeping between scheduled executions.
 
 The module provides the central execution layer of the **WAID platform**, coordinating all pipeline stages from raw data ingestion through machine learning, forecast evaluation, visualization, and documentation. It is designed to work in conjunction with `waid_scheduler_lab.py`, which controls scheduled and retroactive execution cycles.
 

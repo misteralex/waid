@@ -6,7 +6,7 @@ deployments:
   work_pool:
     name: default-agent-pool
   schedule:
-    interval: 1
+    interval: 3600
   parameters:
     period: 2026-09
     skip_ingestion: false
