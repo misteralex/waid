@@ -546,7 +546,7 @@ class WaidSettings(BaseConfig):
         self.ml_output_scaler_pkl_file: Optional[str] = os.getenv("WAID_ML_OUTPUT_SCALER_PKL_FILE")
 
         # Configuration scheduler settings
-        self.scheduled_interval_sec: Optional[int] = self._get_int_env("SCHEDULER_INTERVAL_SEC", 3600)
+        self.scheduled_interval_hours: Optional[int] = self._get_int_env("SCHEDULER_INTERVAL_HOURS", 1)
         
         # 1. Backfill opzionali -> allow_none=True
         self.backfill_begin_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_BEGIN_PERIOD"), allow_none=True)

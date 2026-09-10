@@ -150,7 +150,7 @@ def main() -> int:
 
         # --- STANDARD / CONTINUOUS OPERATIONAL MODE ---
         logger.info("WAID Continuous Operational Scheduler started.")
-        interval_sec = env.scheduled_interval_sec
+        interval_hours = env.scheduled_interval_hours
 
         # 1. Handle Initial Setup / Backfill on first boot
         if check_initial_setup_needed(env):
@@ -186,8 +186,8 @@ def main() -> int:
                 logger.error(f"Critical error during pipeline execution: {e}")
                 return WaidExit.CRITICAL_FAIL
                 
-            logger.info(f"Sleeping for {interval_sec / 60:.0f} minutes until next execution...")
-            time.sleep(interval_sec)
+            logger.info(f"Sleeping for {interval_hours :.0f} hours until next execution...")
+            time.sleep(interval_hours*3600)
         
     except WError as e:
         logger.error(f"[WAID ERROR] {e.message}")

@@ -110,7 +110,8 @@ def generate_prefect_yaml(
                     "name": getattr(env, "work_pool", "default-agent-pool"),
                 },
                 "schedule": {
-                    "interval": int(os.getenv("SCHEDULER_INTERVAL_SEC", 3600)),
+                    # Convert hours to seconds
+                    "interval": int(os.getenv("SCHEDULER_INTERVAL_HOURS", 1)) * 3600,  
                 },
                 "parameters": parameters,
             }

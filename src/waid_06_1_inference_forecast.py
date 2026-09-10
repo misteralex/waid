@@ -3,7 +3,7 @@
 """
 @file waid_06_1_inference_forecast.py
 @brief 6-hour meteorological inference engine using centralized physical guardrails 
-       and incremental reconciliation.
+       and incremental reconciliation. Supports --skip-ml for telemetry-only sync.
 @details Executes model prediction, reconstructs absolute values, and leverages 
          waid_shared for strict physical bounds and quantization before persisting 
          to the inference_forecast table.
@@ -17,11 +17,10 @@ import sqlite3
 import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Tuple, List, Dict, Any
 
 import numpy as np
 import pandas as pd
-import joblib
-import tensorflow as tf
 from loguru import logger
 
 # Inject configuration path safely
@@ -46,8 +45,17 @@ from waid_shared import (
 )
 
 
-def load_active_model_artifacts(env: WaidBoot):
-    """Load the active model and scalers from registry or fallback paths."""
+def load_active_model_artifacts(env: WaidBoot) -> Tuple[Any, Any, Any]:
+    """
+    @brief Loads active ML model and scalar artifacts from registry or fallback directory.
+    
+    @param env WaidBoot application context instance.
+    @return Tuple containing (model, x_scaler, y_scaler).
+    @raises WError If model files or scalers do not exist or database fails.
+    """
+    import joblib
+    import tensorflow as tf
+
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
@@ -60,7 +68,7 @@ def load_active_model_artifacts(env: WaidBoot):
             row = cursor.fetchone()
 
         if row:
-            # Estrae solo il nome del file ignorando eventuali prefissi obsoleti come /app/
+            # Extract file name directly ignoring obsolete prefix paths
             model_path = str(env.ml_models_dir / Path(row[0]).name)
             x_scaler_path = str(env.ml_models_dir / Path(row[1]).name)
             y_scaler_path = str(env.ml_models_dir / Path(row[2]).name)
@@ -88,7 +96,13 @@ def load_active_model_artifacts(env: WaidBoot):
 
 
 def fetch_recent_telemetry(env: WaidBoot) -> pd.DataFrame:
-    """Fetch the last hourly telemetry records using the shared resampling utility."""
+    """
+    @brief Fetches and resamples recent telemetry data from Ecowitt source.
+    
+    @param env WaidBoot application context instance.
+    @return Resampled telemetry DataFrame covering recent lookback.
+    @raises WError If telemetry data is insufficient or fetching fails.
+    """
     try:
         if env.mock_now:
             end_dt = pd.to_datetime(env.mock_now)
@@ -127,7 +141,12 @@ def fetch_recent_telemetry(env: WaidBoot) -> pd.DataFrame:
 
 
 def add_cyclic_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add sine and cosine encoded temporal features for daily and seasonal cycles."""
+    """
+    @brief Encodes cyclic diurnal and seasonal time features (sine/cosine).
+    
+    @param df Input DataFrame with timestamp column.
+    @return DataFrame augmented with sine/cosine cyclic features.
+    """
     ts = pd.to_datetime(df['timestamp'])
     hour = ts.dt.hour + ts.dt.minute / 60.0
     day_of_year = ts.dt.dayofyear
@@ -140,7 +159,14 @@ def add_cyclic_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
-    """Construct input tensor with cyclic features and theoretical solar radiation."""
+    """
+    @brief Constructs multi-dimensional input tensor for ML model inference.
+    
+    @param env WaidBoot application context instance.
+    @param df_raw Raw resampled telemetry DataFrame.
+    @return 3D NumPy array input tensor.
+    @raises WError If input feature count does not match expected model schema.
+    """
     df_engineered = add_cyclic_time_features(df_raw.copy())
     timestamps_arr = df_engineered['timestamp'].values
     
@@ -161,15 +187,209 @@ def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
     return np.expand_dims(input_data, axis=0)
 
 
+def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: WaidBoot) -> None:
+    """
+    @brief Reconciles pending historical predictions against actual observed telemetry and bias records.
+    
+    @param cursor SQLite database connection cursor.
+    @param model_version Identifier string of the model version.
+    @param env WaidBoot application context instance.
+    """
+    logger.info("Starting dynamic reconciliation for all pending records with missing diffs...")
+
+    cursor.execute("""
+        SELECT timestamp 
+        FROM inference_forecast 
+        WHERE (diff_temp IS NULL OR diff_rh IS NULL OR diff_pres IS NULL 
+           OR diff_rh = 0.0 OR diff_temp = 0.0)
+          AND model_version = ?
+        ORDER BY timestamp ASC
+    """, (model_version,))
+    pending_rows = cursor.fetchall()
+
+    for row in pending_rows:
+        ts = row[0]
+        
+        cursor.execute("""
+            SELECT timestamp, temp_eco, pres_eco, rh_eco, wind_eco, solar_eco, rain_eco 
+            FROM match_records 
+            WHERE timestamp = ?
+        """, (ts,))
+        actual_row = cursor.fetchone()
+        
+        if not actual_row:
+            continue
+        
+        _, a_temp, a_pres, a_rh, a_wind, a_solar, a_rain = actual_row
+        
+        if any(v is not None for v in [a_temp, a_rh, a_pres, a_wind, a_solar, a_rain]):
+            actual_raw_arr = np.array([[
+                a_temp if a_temp is not None else 0.0,
+                a_rh if a_rh is not None else 0.0,
+                a_pres if a_pres is not None else 0.0,
+                a_wind if a_wind is not None else 0.0,
+                a_solar if a_solar is not None else 0.0,
+                a_rain if a_rain is not None else 0.0
+            ]])
+            actual_guarded = apply_physics_guardrails(
+                actual_raw_arr, 
+                future_timestamps=[ts], 
+                env=env
+            )[0]
+            a_temp, a_rh, a_pres, a_wind, a_solar, a_rain = actual_guarded
+            
+        cursor.execute("""
+            SELECT pred_temp, pred_rh, pred_pres, pred_wind, pred_solar, pred_rain 
+            FROM inference_forecast 
+            WHERE timestamp = ? AND model_version = ?
+        """, (ts, model_version))
+        pred_row = cursor.fetchone()
+        
+        cursor.execute("""
+            SELECT bias_temp, bias_pres, bias_rh, bias_wind, bias_solar, bias_rain 
+            FROM int_matches_bias WHERE timestamp = ?
+        """, (ts,))
+        bias_row = cursor.fetchone()
+        
+        if pred_row:
+            p_temp, p_rh, p_pres, p_wind, p_solar, p_rain = pred_row
+            
+            b_temp  = float(bias_row[0]) if bias_row and bias_row[0] is not None else 0.0
+            b_pres  = float(bias_row[1]) if bias_row and bias_row[1] is not None else 0.0
+            b_rh    = float(bias_row[2]) if bias_row and bias_row[2] is not None else 0.0
+            b_wind  = float(bias_row[3]) if bias_row and bias_row[3] is not None else 0.0
+            b_solar = float(bias_row[4]) if bias_row and bias_row[4] is not None else 0.0
+            b_rain  = float(bias_row[5]) if bias_row and bias_row[5] is not None else 0.0
+
+            diff_temp  = float(p_temp)  - float(a_temp)  if p_temp  is not None and a_temp  is not None else None
+            diff_rh    = float(p_rh)    - float(a_rh)    if p_rh    is not None and a_rh    is not None else None
+            diff_pres  = float(p_pres)  - float(a_pres)  if p_pres  is not None and a_pres  is not None else None
+            diff_wind  = float(p_wind)  - float(a_wind)  if p_wind  is not None and a_wind  is not None else None
+            diff_solar = float(p_solar) - float(a_solar) if p_solar is not None and a_solar is not None else None
+            diff_rain  = float(p_rain)  - float(a_rain)  if p_rain  is not None and a_rain  is not None else None
+
+            drift_temp  = (diff_temp  - b_temp)  if diff_temp  is not None else None
+            drift_rh    = (diff_rh    - b_rh)    if diff_rh    is not None else None
+            drift_pres  = (diff_pres  - b_pres)  if diff_pres  is not None else None
+            drift_wind  = (diff_wind  - b_wind)  if diff_wind  is not None else None
+            drift_solar = (diff_solar - b_solar) if diff_solar is not None else None
+            drift_rain  = (diff_rain  - b_rain)  if diff_rain  is not None else None
+
+            cursor.execute("""
+                UPDATE inference_forecast 
+                SET diff_temp = ?, diff_rh = ?, diff_pres = ?, diff_wind = ?, diff_solar = ?, diff_rain = ?,
+                    historical_bias_temp = ?, historical_bias_rh = ?, historical_bias_pres = ?, 
+                    historical_bias_wind = ?, historical_bias_solar = ?, historical_bias_rain = ?,
+                    drift_vs_bias_temp = ?, drift_vs_bias_rh = ?, drift_vs_bias_pres = ?, 
+                    drift_vs_bias_wind = ?, drift_vs_bias_solar = ?, drift_vs_bias_rain = ?,
+                    drift_vs_bias = ?
+                WHERE timestamp = ? AND model_version = ?
+            """, (
+                diff_temp, diff_rh, diff_pres, diff_wind, diff_solar, diff_rain,
+                b_temp, b_rh, b_pres, b_wind, b_solar, b_rain,
+                drift_temp, drift_rh, drift_pres, drift_wind, drift_solar, drift_rain,
+                drift_temp,
+                ts, model_version
+            ))
+
+
+def sync_telemetry_only(env: WaidBoot, df_raw: pd.DataFrame) -> None:
+    """
+    @brief Populates telemetry observation timestamps and executes reconciliation without ML predictions.
+    
+    @param env WaidBoot application context instance.
+    @param df_raw Raw resampled telemetry DataFrame.
+    @raises WError If database synchronization fails.
+    """
+    logger.info("Executing telemetry-only sync for inference_forecast (--skip-ml mode active)...")
+    try:
+        with sqlite3.connect(env.waid_db) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS inference_forecast(
+                    timestamp TEXT,
+                    model_version TEXT,
+                    created_at TEXT,
+                    ts_window_start TEXT,
+                    ts_window_stop TEXT,
+                    pred_temp REAL,
+                    pred_rh REAL,
+                    pred_pres REAL,
+                    pred_wind REAL,
+                    pred_rain REAL,
+                    pred_solar REAL,
+                    diff_temp REAL,
+                    diff_rh REAL,
+                    historical_bias_temp REAL,
+                    drift_vs_bias REAL,
+                    PRIMARY KEY (timestamp, model_version)
+                )
+            """)
+
+            cursor.execute("PRAGMA table_info(inference_forecast)")
+            existing_columns = [col[1] for col in cursor.fetchall()]
+            
+            required_columns = {
+                "created_at": "TEXT",
+                "ts_window_start": "TEXT",
+                "ts_window_stop": "TEXT",
+                "diff_temp": "REAL", "diff_rh": "REAL", "diff_pres": "REAL", 
+                "diff_wind": "REAL", "diff_solar": "REAL", "diff_rain": "REAL",
+                "historical_bias_temp": "REAL", "historical_bias_rh": "REAL", "historical_bias_pres": "REAL", 
+                "historical_bias_wind": "REAL", "historical_bias_solar": "REAL", "historical_bias_rain": "REAL",
+                "drift_vs_bias_temp": "REAL", "drift_vs_bias_rh": "REAL", "drift_vs_bias_pres": "REAL", 
+                "drift_vs_bias_wind": "REAL", "drift_vs_bias_solar": "REAL", "drift_vs_bias_rain": "REAL"
+            }
+            
+            for col_name, col_type in required_columns.items():
+                if col_name not in existing_columns:
+                    cursor.execute(f"ALTER TABLE inference_forecast ADD COLUMN {col_name} {col_type}")
+
+            created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            model_version = "weather_model_full"
+            timestamps = df_raw['timestamp'].tolist()
+            window_start = timestamps[0]
+            window_stop = timestamps[-1]
+
+            for ts in timestamps:
+                cursor.execute("""
+                    INSERT INTO inference_forecast (
+                        timestamp, model_version, created_at, ts_window_start, ts_window_stop
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(timestamp, model_version) DO UPDATE SET
+                        created_at = excluded.created_at,
+                        ts_window_start = excluded.ts_window_start,
+                        ts_window_stop = excluded.ts_window_stop
+                """, (ts, model_version, created_at, window_start, window_stop))
+
+            run_dynamic_reconciliation(cursor, model_version, env)
+            conn.commit()
+            
+        logger.success("Observation timestamps and reconciliation successfully processed.")
+    except sqlite3.Error as e:
+        raise WError(f"Failed to sync telemetry to inference_forecast: {e}", code=WaidExit.DATA_FAIL)
+
+
 def persist_and_update_inference_forecast(
     env: WaidBoot, 
-    future_timestamps: list[str], 
+    future_timestamps: List[str], 
     preds_guarded: np.ndarray, 
-    sensor_specs: dict,
+    sensor_specs: Dict[str, Any],
     window_start: str,
     window_stop: str
-):
-    """Directly persist and update permanent inference_forecast table with window lineage and pending reconciliation."""
+) -> None:
+    """
+    @brief Persists physics-safe predictions to the permanent inference_forecast table and triggers reconciliation.
+    
+    @param env WaidBoot application context instance.
+    @param future_timestamps List of future target UTC timestamps.
+    @param preds_guarded Physics-guarded NumPy array of predictions.
+    @param sensor_specs Dictionary reserved for station sensor configurations.
+    @param window_start Lineage window start timestamp string.
+    @param window_stop Lineage window stop timestamp string.
+    @raises WError If database update fails.
+    """
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
@@ -254,114 +474,24 @@ def persist_and_update_inference_forecast(
                         timestamp, model_version
                     ))
 
-            logger.info("Starting dynamic reconciliation for all pending records with missing diffs...")
-
-            cursor.execute("""
-                SELECT timestamp 
-                FROM inference_forecast 
-                WHERE (diff_temp IS NULL OR diff_rh IS NULL OR diff_pres IS NULL 
-                   OR diff_rh = 0.0 OR diff_temp = 0.0)
-                  AND model_version = ?
-                ORDER BY timestamp ASC
-            """, (model_version,))
-            pending_rows = cursor.fetchall()
-
-            for row in pending_rows:
-                ts = row[0]
-                
-                cursor.execute("""
-                    SELECT timestamp, temp_eco, pres_eco, rh_eco, wind_eco, solar_eco, rain_eco 
-                    FROM match_records 
-                    WHERE timestamp = ?
-                """, (ts,))
-                actual_row = cursor.fetchone()
-                
-                if not actual_row:
-                    continue
-                
-                _, a_temp, a_pres, a_rh, a_wind, a_solar, a_rain = actual_row
-                
-                if any(v is not None for v in [a_temp, a_rh, a_pres, a_wind, a_solar, a_rain]):
-                    actual_raw_arr = np.array([[
-                        a_temp if a_temp is not None else 0.0,
-                        a_rh if a_rh is not None else 0.0,
-                        a_pres if a_pres is not None else 0.0,
-                        a_wind if a_wind is not None else 0.0,
-                        a_solar if a_solar is not None else 0.0,
-                        a_rain if a_rain is not None else 0.0
-                    ]])
-                    actual_guarded = apply_physics_guardrails(
-                        actual_raw_arr, 
-                        future_timestamps=[ts], 
-                        env=env
-                    )[0]
-                    a_temp, a_rh, a_pres, a_wind, a_solar, a_rain = actual_guarded
-                    
-                cursor.execute("""
-                    SELECT pred_temp, pred_rh, pred_pres, pred_wind, pred_solar, pred_rain 
-                    FROM inference_forecast 
-                    WHERE timestamp = ? AND model_version = ?
-                """, (ts, model_version))
-                pred_row = cursor.fetchone()
-                
-                cursor.execute("""
-                    SELECT bias_temp, bias_pres, bias_rh, bias_wind, bias_solar, bias_rain 
-                    FROM int_matches_bias WHERE timestamp = ?
-                """, (ts,))
-                bias_row = cursor.fetchone()
-                
-                if pred_row:
-                    p_temp, p_rh, p_pres, p_wind, p_solar, p_rain = pred_row
-                    
-                    b_temp  = float(bias_row[0]) if bias_row and bias_row[0] is not None else 0.0
-                    b_pres  = float(bias_row[1]) if bias_row and bias_row[1] is not None else 0.0
-                    b_rh    = float(bias_row[2]) if bias_row and bias_row[2] is not None else 0.0
-                    b_wind  = float(bias_row[3]) if bias_row and bias_row[3] is not None else 0.0
-                    b_solar = float(bias_row[4]) if bias_row and bias_row[4] is not None else 0.0
-                    b_rain  = float(bias_row[5]) if bias_row and bias_row[5] is not None else 0.0
-
-                    diff_temp  = float(p_temp)  - float(a_temp)  if p_temp  is not None and a_temp  is not None else None
-                    diff_rh    = float(p_rh)    - float(a_rh)    if p_rh    is not None and a_rh    is not None else None
-                    diff_pres  = float(p_pres)  - float(a_pres)  if p_pres  is not None and a_pres  is not None else None
-                    diff_wind  = float(p_wind)  - float(a_wind)  if p_wind  is not None and a_wind  is not None else None
-                    diff_solar = float(p_solar) - float(a_solar) if p_solar is not None and a_solar is not None else None
-                    diff_rain  = float(p_rain)  - float(a_rain)  if p_rain  is not None and a_rain  is not None else None
-
-                    drift_temp  = (diff_temp  - b_temp)  if diff_temp  is not None else None
-                    drift_rh    = (diff_rh    - b_rh)    if diff_rh    is not None else None
-                    drift_pres  = (diff_pres  - b_pres)  if diff_pres  is not None else None
-                    drift_wind  = (diff_wind  - b_wind)  if diff_wind  is not None else None
-                    drift_solar = (diff_solar - b_solar) if diff_solar is not None else None
-                    drift_rain  = (diff_rain  - b_rain)  if diff_rain  is not None else None
-
-                    cursor.execute("""
-                        UPDATE inference_forecast 
-                        SET diff_temp = ?, diff_rh = ?, diff_pres = ?, diff_wind = ?, diff_solar = ?, diff_rain = ?,
-                            historical_bias_temp = ?, historical_bias_rh = ?, historical_bias_pres = ?, 
-                            historical_bias_wind = ?, historical_bias_solar = ?, historical_bias_rain = ?,
-                            drift_vs_bias_temp = ?, drift_vs_bias_rh = ?, drift_vs_bias_pres = ?, 
-                            drift_vs_bias_wind = ?, drift_vs_bias_solar = ?, drift_vs_bias_rain = ?,
-                            drift_vs_bias = ?
-                        WHERE timestamp = ? AND model_version = ?
-                    """, (
-                        diff_temp, diff_rh, diff_pres, diff_wind, diff_solar, diff_rain,
-                        b_temp, b_rh, b_pres, b_wind, b_solar, b_rain,
-                        drift_temp, drift_rh, drift_pres, drift_wind, drift_solar, drift_rain,
-                        drift_temp,
-                        ts, model_version
-                    ))
-
+            run_dynamic_reconciliation(cursor, model_version, env)
             conn.commit()
+
         logger.success("Permanent inference_forecast table successfully updated.")
     except sqlite3.Error as e:
         raise WError(f"Failed to update inference forecast table: {e}", code=WaidExit.DATA_FAIL)
 
 
 def main() -> int:
-    """Main entry point for executing the 6-hour weather inference and reconciliation workflow."""
+    """
+    @brief Main execution block for running 6-hour weather inference and reconciliation workflow.
+    
+    @return Exit code integer from WaidExit.
+    """
     try:
         parser = argparse.ArgumentParser(description="WAID Inference Engine")
         parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        parser.add_argument("--skip-ml", action="store_true", help="Skip ML model predictions and sync telemetry only")
         args, _ = parser.parse_known_args()
         
         env = WaidBoot()
@@ -370,6 +500,13 @@ def main() -> int:
             env.mock_now = validate_mock_timestamp(args.mock_now)
             logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
         
+        df_raw = fetch_recent_telemetry(env)
+
+        if args.skip_ml:
+            logger.info("Flag --skip-ml enabled: Syncing telemetry and performing reconciliation without ML inference.")
+            sync_telemetry_only(env, df_raw)
+            return WaidExit.SUCCESS
+
         logger.info(f"Environment initialized: WAID_ML_MODELS_DIR={os.environ.get('WAID_ML_MODELS_DIR')}")
         logger.info(f"Environment initialized: env.ml_model_h5_file={env.ml_model_h5_file}")
         logger.info(f"Environment initialized: env.ml_models_dir={env.ml_models_dir}")
@@ -379,7 +516,6 @@ def main() -> int:
         _, _, _, _, _, _ = get_station_metadata(env)
 
         model, x_scaler, y_scaler = load_active_model_artifacts(env)
-        df_raw = fetch_recent_telemetry(env)
         recent_timestamps = df_raw['timestamp'].tolist()
 
         # Extract lineage window timestamps
@@ -423,13 +559,13 @@ def main() -> int:
             for h in range(preds_deltas.shape[0]):
                 preds_absolute[h, :] = last_actual_features + preds_deltas[h, :]
 
-        # 1. Normalizza l'ultimo timestamp della telemetria assicurandoti che sia convertito in UTC
+        # Normalize the last telemetry timestamp ensuring conversion to UTC
         if env.mock_now:
             last_dt = pd.to_datetime(env.mock_now)
         else:
             last_dt = pd.to_datetime(recent_timestamps[-1])
 
-        # Se il timestamp letto non ha timezone, viene localizzato prima nell'ora locale della stazione e poi convertito in UTC
+        # Handle timezone resolution and convert to UTC
         if last_dt.tzinfo is None:
             utc_base_dt = last_dt.tz_localize(env.tz_timezone, ambiguous='NaT', nonexistent='shift_forward').tz_convert('UTC')
         else:
@@ -437,7 +573,7 @@ def main() -> int:
 
         utc_base_dt_hourly = utc_base_dt.floor('h')
 
-        # 2. Genera i timestamp futuri (UTC) a partire dall'ora UTC appena calcolata
+        # Generate future target timestamps in UTC starting from the base hourly offset
         future_timestamps = [
             (utc_base_dt_hourly + pd.Timedelta(hours=i+1)).strftime("%Y-%m-%d %H:%M:%S") 
             for i in range(env.forecast_horizon_hours)

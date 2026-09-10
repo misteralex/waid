@@ -33,12 +33,29 @@ if dotenv_path.exists():
 else:
     load_dotenv()  # Fallback to default .env file in project root
 
-# Inject configuration path safely
-sys.path.append(
-    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
-)
+# Resolve WAID root path via WAID_SOURCE environment variable
+waid_root = Path(
+    os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])
+).resolve()
+
+# Append src directory to sys.path (enables imports like: from waid_shared import ...)
+src_dir = waid_root / "src"
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
+# Append root directory to sys.path as fallback
+if str(waid_root) not in sys.path:
+    sys.path.insert(0, str(waid_root))
+
+# Append config directory to sys.path (enables imports like: from boot import ...)
+config_dir = waid_root / "config"
+if str(config_dir) not in sys.path:
+    sys.path.insert(0, str(config_dir))
+
 from boot import WaidBoot, WError, WaidExit
 
+# Import shared utilities from Single Source of Truth inside src/
+from waid_shared import get_last_inference_datetime
 
 def get_deployment_status() -> str:
     """
@@ -248,6 +265,77 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
 
     return df
 
+
+@st.cache_data(ttl=300)
+def fetch_last_inference_timestamp() -> str:
+    """
+    @brief Fetches the timestamp of the last calculated ML inference from public_forecasts.
+    
+    @return Formatted string representation of the last inference datetime, or 'N/A'.
+    """
+    try:
+        env = WaidBoot()
+        deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
+    except Exception:
+        deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+
+    if deploy_mode == "cloud":
+        try:
+            db_config = getattr(env, "active_db_config", None)
+            user = getattr(db_config, "user", None) or getattr(db_config, "db_user", None) or os.getenv("WAID_DB_USER")
+            password = getattr(db_config, "password", None) or getattr(db_config, "db_password", None) or os.getenv("WAID_DB_PASSWORD")
+            host = getattr(db_config, "host", None) or getattr(db_config, "db_host", None) or os.getenv("WAID_DB_HOST")
+            port = getattr(db_config, "port", None) or getattr(db_config, "db_port", "6543") or os.getenv("WAID_DB_PORT", "6543")
+            dbname = getattr(db_config, "dbname", None) or getattr(db_config, "db_name", "postgres") or os.getenv("WAID_DB_NAME", "postgres")
+
+            if not all([user, password, host]):
+                return "N/A"
+
+            supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
+            engine = create_engine(supabase_url, poolclass=NullPool)
+
+            schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
+            
+            # Primary attempt using created_at (ML model execution timestamp)
+            try:
+                query = text(f"SELECT MAX(created_at) AS last_ts FROM {schema_prefix}public_forecasts;")
+                with engine.connect() as conn:
+                    res = conn.execute(query).scalar()
+            except Exception:
+                # Fallback to timestamp if created_at column is missing
+                query = text(f"SELECT MAX(timestamp) AS last_ts FROM {schema_prefix}public_forecasts;")
+                with engine.connect() as conn:
+                    res = conn.execute(query).scalar()
+
+            if res:
+                return pd.to_datetime(res).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            st.error(f"Error fetching last inference from Supabase: {e}")
+            return "N/A"
+    else:
+        # Fallback to local SQLite database
+        base_dir = Path(__file__).resolve().parent
+        cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
+        local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
+        data_dir_db = Path(env.waid_data_dir) / env.deploy_db_file
+
+        db_path = None
+        for candidate in [cloud_deploy_db, local_deploy_db, data_dir_db]:
+            if candidate and candidate.exists():
+                db_path = candidate
+                break
+
+        if not db_path:
+            return "N/A"
+
+        # Use shared utility function from waid_shared
+        dt = get_last_inference_datetime(db_path, table_name="public_forecasts")
+        if dt:
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    return "N/A"
+
+
 def run_dashboard(env: WaidBoot) -> None:
     """
     @brief Executes the Streamlit interactive visualization dashboard logic.
@@ -255,7 +343,7 @@ def run_dashboard(env: WaidBoot) -> None:
 
     st.set_page_config(page_title="WAID Public Analytics", layout="wide")
 
-    # CSS responsive per ottimizzare i margini e i font sui dispositivi mobili (< 768px)
+    # Responsive CSS styling for mobile devices (< 768px)
     st.markdown("""
         <style>
         @media (max-width: 768px) {
@@ -284,8 +372,14 @@ def run_dashboard(env: WaidBoot) -> None:
     today_str = pd.Timestamp.now().strftime('%Y-%m-%d')
     default_index = available_dates.index(today_str) if today_str in available_dates else 0
 
+    # --- SIDEBAR CONFIGURATION ---
     st.sidebar.header("Configuration")
-    selected_date = st.sidebar.sidebar if False else st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
+    selected_date = st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
+
+    # Metric: Last calculated ML inference timestamp
+    last_inf_ts = fetch_last_inference_timestamp()
+    st.sidebar.markdown(f"**Last ML Inference**  \n<small>{last_inf_ts}</small>", unsafe_allow_html=True)
+    st.sidebar.markdown("---")
 
     df_day = load_public_data_for_day(selected_date)
     if df_day.empty:
@@ -315,7 +409,7 @@ def run_dashboard(env: WaidBoot) -> None:
                 # Temperature and Pressure (no hard zero boundary)
                 df_day[f'ecowitt_{k}'] = raw_actual
 
-    # Estraggo la presenza di ERA5 sui dati caricati del giorno
+    # Extract ERA5 presence for the loaded target day
     era5_available = df_day[df_day['temp_era5'].notnull()]['ts_target'] if 'temp_era5' in df_day.columns else pd.Series()
 
     if not era5_available.empty:
@@ -336,7 +430,7 @@ def run_dashboard(env: WaidBoot) -> None:
         "rain": ("Hourly Rain", "mm")
     }
 
-    # Configurazione Plotly universale e mobile-friendly
+    # Universal mobile-friendly Plotly configuration
     plotly_config = {
         'responsive': True,
         'displayModeBar': False,
@@ -350,12 +444,19 @@ def run_dashboard(env: WaidBoot) -> None:
             st.subheader(f"Feature: {label} ({unit})")
             
             col1, col2, col3 = st.columns(3)
-            mae_era5 = df_day[f'abs_error_{key}'].mean() if f'abs_error_{key}' in df_day.columns else None
-            bias = df_day[f'historical_bias_{key}'].mean() if f'historical_bias_{key}' in df_day.columns else 0.0
-            drift = df_day[f'drift_vs_bias_{key}'].mean() if f'drift_vs_bias_{key}' in df_day.columns else 0.0
+
+            # Strict NaN handling to prevent '+nan' display on UI metrics
+            mae_series = df_day[f'abs_error_{key}'].dropna() if f'abs_error_{key}' in df_day.columns else pd.Series()
+            mae_era5 = mae_series.mean() if not mae_series.empty else None
+
+            bias_series = df_day[f'historical_bias_{key}'].dropna() if f'historical_bias_{key}' in df_day.columns else pd.Series()
+            bias = bias_series.mean() if not bias_series.empty else 0.0
+
+            drift_series = df_day[f'drift_vs_bias_{key}'].dropna() if f'drift_vs_bias_{key}' in df_day.columns else pd.Series()
+            drift = drift_series.mean() if not drift_series.empty else 0.0
 
             with col1:
-                st.metric("MAE (Pred vs ERA5)", f"{mae_era5:.2f} {unit}" if pd.notnull(mae_era5) else "N/A (Pending ERA5)")
+                st.metric("MAE (Pred vs ERA5)", f"{mae_era5:.2f} {unit}" if mae_era5 is not None else "N/A (Pending ERA5)")
             with col2:
                 st.metric("Historical Bias", f"{bias:+.2f} {unit}")
             with col3:
@@ -424,6 +525,7 @@ def run_dashboard(env: WaidBoot) -> None:
     st.markdown("---")
     with st.expander("View Raw Database Records & Metrics"):
         st.dataframe(df_day, width="stretch")
+        
 
 def main() -> int:
     """
