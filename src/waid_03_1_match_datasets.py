@@ -16,7 +16,7 @@ import sys
 import sqlite3
 import argparse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -126,7 +126,7 @@ def perform_matching_with_ecowitt(
     start_date = period.strftime("%Y-%m-01 00:00:00")
     
     # Determine upper bound: current time if current month, otherwise end of month
-    current_time = datetime.now()
+    current_time = datetime.now(timezone.utc).replace(tzinfo=None)
     if period.year == current_time.year and period.month == current_time.month:
         end_date = current_time.strftime("%Y-%m-%d %H:%M:%S")
     else:

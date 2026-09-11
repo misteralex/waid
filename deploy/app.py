@@ -128,10 +128,11 @@ def run_deployment_setup(env: WaidBoot) -> None:
 
     logger.success("Deployment package successfully created!")
 
+
 @st.cache_data(ttl=300)
 def get_available_dates() -> list:
     """
-    @brief Fetches only the distinct list of available dates from the database for fast dropdown rendering.
+    @brief Fetches only distinct available dates for fast dropdown rendering.
     
     @return Sorted list of date strings (YYYY-MM-DD) in descending order.
     """
@@ -156,7 +157,8 @@ def get_available_dates() -> list:
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
 
-            query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {env.db_schema_target}.public_forecasts ORDER BY target_date DESC;")
+            schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
+            query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {schema_prefix}public_forecasts ORDER BY target_date DESC;")
             with engine.connect() as conn:
                 df_dates = pd.read_sql_query(query, conn)
 
@@ -186,22 +188,29 @@ def get_available_dates() -> list:
 
     return []
 
+
 @st.cache_data(ttl=300)
 def load_public_data_for_day(target_date: str) -> pd.DataFrame:
     """
-    @brief Loads analytics data exclusively for the specified target date.
+    @brief Loads analytics data exclusively for the specified target date (converted to UTC for DB querying).
     
-    @param target_date Target date string in YYYY-MM-DD format.
-    @return Cleaned pandas DataFrame containing day specific metrics and forecasts.
+    @param target_date Target date string in YYYY-MM-DD format (local time).
+    @return Cleaned pandas DataFrame containing day-specific metrics and forecasts in local display time.
     """
     try:
         env = WaidBoot()
         deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
+        target_tz = getattr(env, "tz_timezone", "UTC")
     except Exception:
         deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+        target_tz = "UTC"
 
-    start_ts = f"{target_date} 00:00:00"
-    end_ts = f"{target_date} 23:59:59"
+    # Converte i confini del giorno locale nell'equivalente finestra temporale UTC
+    local_start = pd.Timestamp(f"{target_date} 00:00:00", tz=target_tz)
+    local_end = pd.Timestamp(f"{target_date} 23:59:59", tz=target_tz)
+
+    start_ts = local_start.tz_convert('UTC').strftime("%Y-%m-%d %H:%M:%S")
+    end_ts = local_end.tz_convert('UTC').strftime("%Y-%m-%d %H:%M:%S")
 
     if deploy_mode == "cloud":
         try:
@@ -218,8 +227,9 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
 
+            schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
             query = text(f"""
-                SELECT * FROM {env.db_schema_target}.public_forecasts 
+                SELECT * FROM {schema_prefix}public_forecasts 
                 WHERE timestamp >= :start_ts AND timestamp <= :end_ts 
                 ORDER BY timestamp ASC;
             """)
@@ -249,6 +259,7 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    # Cast numerici sicuri
     numeric_cols = [
         'pred_temp', 'pred_rh', 'pred_pres', 'pred_wind', 'pred_rain', 'pred_solar',
         'diff_temp', 'diff_rh', 'diff_pres', 'diff_wind', 'diff_rain', 'diff_solar',
@@ -386,13 +397,13 @@ def run_dashboard(env: WaidBoot) -> None:
         st.warning(f"No data available for {selected_date}.")
         return
 
-    # Robust timestamp parsing with explicit UTC localization and conversion to local timezone
+    # Parse timestamp UTC e conversione pulita all'ora locale del dispositivo/stazione
     df_day['ts_target'] = pd.to_datetime(df_day['timestamp'], errors='coerce')
     if df_day['ts_target'].dt.tz is None:
         df_day['ts_target'] = df_day['ts_target'].dt.tz_localize('UTC')
     
-    target_tz = env.tz_timezone
-    df_day['ts_target'] = df_day['ts_target'].dt.tz_convert(target_tz).dt.tz_convert(None)  
+    target_tz = getattr(env, "tz_timezone", "UTC")
+    df_day['ts_target'] = df_day['ts_target'].dt.tz_convert(target_tz).dt.tz_localize(None)
 
     for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
         if f'pred_{k}' in df_day.columns and f'diff_{k}' in df_day.columns:

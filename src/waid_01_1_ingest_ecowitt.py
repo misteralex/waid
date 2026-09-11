@@ -87,7 +87,7 @@ def download_ecowitt_data(
     chunk_name = f"{base_name}A.csv"
     url = f"http://{ip}:{port}/{chunk_name}"
 
-    if not check_url_exists(url):
+    if not check_url_exists(url, env.ecowitt_gw_timeout_sec):
         logger.info(f"No data available ({chunk_name})")
         return env.waid_exit.DATA_FAIL
 

@@ -140,16 +140,25 @@ def fetch_recent_telemetry(env: WaidBoot) -> pd.DataFrame:
         raise WError(f"Failed to fetch and resample recent telemetry: {e}", code=WaidExit.DATA_FAIL)
 
 
-def add_cyclic_time_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_cyclic_time_features(df: pd.DataFrame, tz_timezone: str = "UTC") -> pd.DataFrame:
     """
-    @brief Encodes cyclic diurnal and seasonal time features (sine/cosine).
+    @brief Encodes cyclic diurnal and seasonal time features using local time.
     
-    @param df Input DataFrame with timestamp column.
-    @return DataFrame augmented with sine/cosine cyclic features.
+    @param df Pandas DataFrame containing a 'timestamp' column.
+    @param tz_timezone Target timezone identifier string for local time calculations.
+    @return DataFrame enriched with hour_sin, hour_cos, doy_sin, and doy_cos columns.
     """
     ts = pd.to_datetime(df['timestamp'])
-    hour = ts.dt.hour + ts.dt.minute / 60.0
-    day_of_year = ts.dt.dayofyear
+    
+    # Ensure timestamp has UTC timezone before local conversion
+    if ts.dt.tz is None:
+        ts = ts.dt.tz_localize('UTC')
+        
+    # Convert to local timezone for accurate diurnal cycle extraction
+    ts_local = ts.dt.tz_convert(tz_timezone)
+    
+    hour = ts_local.dt.hour + ts_local.dt.minute / 60.0
+    day_of_year = ts_local.dt.dayofyear
     
     df['hour_sin'] = np.sin(2 * np.pi * hour / 24.0)
     df['hour_cos'] = np.cos(2 * np.pi * hour / 24.0)
@@ -164,18 +173,19 @@ def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
     
     @param env WaidBoot application context instance.
     @param df_raw Raw resampled telemetry DataFrame.
-    @return 3D NumPy array input tensor.
-    @raises WError If input feature count does not match expected model schema.
+    @return NumPy array formatted as a 3D tensor (1, timesteps, features).
+    @raises WError If the extracted feature count does not match model expectations.
     """
-    df_engineered = add_cyclic_time_features(df_raw.copy())
-    timestamps_arr = df_engineered['timestamp'].values
+    # Use environment timezone to calculate diurnal features correctly
+    df_engineered = add_cyclic_time_features(df_raw.copy(), tz_timezone=env.tz_timezone)
     
+    # Theoretical solar radiation requires native UTC timestamps
+    ts_utc = pd.to_datetime(df_engineered['timestamp'])
+    if ts_utc.dt.tz is None:
+        ts_utc = ts_utc.dt.tz_localize('UTC')
+        
     theo_solar_vals = calculate_theoretical_solar_radiation(
-        timestamps_arr, env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
-    )
-    logger.debug(
-        f"Input Tensor - Theoretical Solar Range: "
-        f"Min={theo_solar_vals.min():.2f} W/m², Max={theo_solar_vals.max():.2f} W/m²"
+        ts_utc.values, env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
     )
     
     df_engineered['theo_solar'] = theo_solar_vals
@@ -293,6 +303,53 @@ def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: 
             ))
 
 
+def ensure_inference_forecast_table(cursor: sqlite3.Cursor) -> None:
+    """
+    @brief Ensures the inference_forecast table exists and contains all required schema columns.
+    
+    @param cursor SQLite database connection cursor.
+    """
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inference_forecast(
+            timestamp TEXT,
+            model_version TEXT,
+            created_at TEXT,
+            ts_window_start TEXT,
+            ts_window_stop TEXT,
+            pred_temp REAL,
+            pred_rh REAL,
+            pred_pres REAL,
+            pred_wind REAL,
+            pred_rain REAL,
+            pred_solar REAL,
+            diff_temp REAL,
+            diff_rh REAL,
+            historical_bias_temp REAL,
+            drift_vs_bias REAL,
+            PRIMARY KEY (timestamp, model_version)
+        )
+    """)
+
+    cursor.execute("PRAGMA table_info(inference_forecast)")
+    existing_columns = [col[1] for col in cursor.fetchall()]
+    
+    required_columns = {
+        "created_at": "TEXT",
+        "ts_window_start": "TEXT",
+        "ts_window_stop": "TEXT",
+        "diff_temp": "REAL", "diff_rh": "REAL", "diff_pres": "REAL", 
+        "diff_wind": "REAL", "diff_solar": "REAL", "diff_rain": "REAL",
+        "historical_bias_temp": "REAL", "historical_bias_rh": "REAL", "historical_bias_pres": "REAL", 
+        "historical_bias_wind": "REAL", "historical_bias_solar": "REAL", "historical_bias_rain": "REAL",
+        "drift_vs_bias_temp": "REAL", "drift_vs_bias_rh": "REAL", "drift_vs_bias_pres": "REAL", 
+        "drift_vs_bias_wind": "REAL", "drift_vs_bias_solar": "REAL", "drift_vs_bias_rain": "REAL"
+    }
+    
+    for col_name, col_type in required_columns.items():
+        if col_name not in existing_columns:
+            cursor.execute(f"ALTER TABLE inference_forecast ADD COLUMN {col_name} {col_type}")
+
+
 def sync_telemetry_only(env: WaidBoot, df_raw: pd.DataFrame) -> None:
     """
     @brief Populates telemetry observation timestamps and executes reconciliation without ML predictions.
@@ -305,46 +362,7 @@ def sync_telemetry_only(env: WaidBoot, df_raw: pd.DataFrame) -> None:
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS inference_forecast(
-                    timestamp TEXT,
-                    model_version TEXT,
-                    created_at TEXT,
-                    ts_window_start TEXT,
-                    ts_window_stop TEXT,
-                    pred_temp REAL,
-                    pred_rh REAL,
-                    pred_pres REAL,
-                    pred_wind REAL,
-                    pred_rain REAL,
-                    pred_solar REAL,
-                    diff_temp REAL,
-                    diff_rh REAL,
-                    historical_bias_temp REAL,
-                    drift_vs_bias REAL,
-                    PRIMARY KEY (timestamp, model_version)
-                )
-            """)
-
-            cursor.execute("PRAGMA table_info(inference_forecast)")
-            existing_columns = [col[1] for col in cursor.fetchall()]
-            
-            required_columns = {
-                "created_at": "TEXT",
-                "ts_window_start": "TEXT",
-                "ts_window_stop": "TEXT",
-                "diff_temp": "REAL", "diff_rh": "REAL", "diff_pres": "REAL", 
-                "diff_wind": "REAL", "diff_solar": "REAL", "diff_rain": "REAL",
-                "historical_bias_temp": "REAL", "historical_bias_rh": "REAL", "historical_bias_pres": "REAL", 
-                "historical_bias_wind": "REAL", "historical_bias_solar": "REAL", "historical_bias_rain": "REAL",
-                "drift_vs_bias_temp": "REAL", "drift_vs_bias_rh": "REAL", "drift_vs_bias_pres": "REAL", 
-                "drift_vs_bias_wind": "REAL", "drift_vs_bias_solar": "REAL", "drift_vs_bias_rain": "REAL"
-            }
-            
-            for col_name, col_type in required_columns.items():
-                if col_name not in existing_columns:
-                    cursor.execute(f"ALTER TABLE inference_forecast ADD COLUMN {col_name} {col_type}")
+            ensure_inference_forecast_table(cursor)
 
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             model_version = "weather_model_full"
@@ -393,46 +411,7 @@ def persist_and_update_inference_forecast(
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS inference_forecast(
-                    timestamp TEXT,
-                    model_version TEXT,
-                    created_at TEXT,
-                    ts_window_start TEXT,
-                    ts_window_stop TEXT,
-                    pred_temp REAL,
-                    pred_rh REAL,
-                    pred_pres REAL,
-                    pred_wind REAL,
-                    pred_rain REAL,
-                    pred_solar REAL,
-                    diff_temp REAL,
-                    diff_rh REAL,
-                    historical_bias_temp REAL,
-                    drift_vs_bias REAL,
-                    PRIMARY KEY (timestamp, model_version)
-                )
-            """)
-
-            cursor.execute("PRAGMA table_info(inference_forecast)")
-            existing_columns = [col[1] for col in cursor.fetchall()]
-            
-            required_columns = {
-                "created_at": "TEXT",
-                "ts_window_start": "TEXT",
-                "ts_window_stop": "TEXT",
-                "diff_temp": "REAL", "diff_rh": "REAL", "diff_pres": "REAL", 
-                "diff_wind": "REAL", "diff_solar": "REAL", "diff_rain": "REAL",
-                "historical_bias_temp": "REAL", "historical_bias_rh": "REAL", "historical_bias_pres": "REAL", 
-                "historical_bias_wind": "REAL", "historical_bias_solar": "REAL", "historical_bias_rain": "REAL",
-                "drift_vs_bias_temp": "REAL", "drift_vs_bias_rh": "REAL", "drift_vs_bias_pres": "REAL", 
-                "drift_vs_bias_wind": "REAL", "drift_vs_bias_solar": "REAL", "drift_vs_bias_rain": "REAL"
-            }
-            
-            for col_name, col_type in required_columns.items():
-                if col_name not in existing_columns:
-                    cursor.execute(f"ALTER TABLE inference_forecast ADD COLUMN {col_name} {col_type}")
+            ensure_inference_forecast_table(cursor)
 
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             model_version = "weather_model_full"
@@ -565,9 +544,9 @@ def main() -> int:
         else:
             last_dt = pd.to_datetime(recent_timestamps[-1])
 
-        # Handle timezone resolution and convert to UTC
+        # Timestamps in DB/telemetry are natively in UTC
         if last_dt.tzinfo is None:
-            utc_base_dt = last_dt.tz_localize(env.tz_timezone, ambiguous='NaT', nonexistent='shift_forward').tz_convert('UTC')
+            utc_base_dt = last_dt.tz_localize('UTC')
         else:
             utc_base_dt = last_dt.tz_convert('UTC')
 

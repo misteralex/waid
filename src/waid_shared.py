@@ -25,8 +25,8 @@ def calculate_theoretical_solar_radiation(
     local_tz: str = None,
 ) -> np.ndarray:
     """
-    Computes theoretical clear-sky solar radiation based on UTC time of day,
-    day of the year, and geographical coordinates to prevent daylight saving time shifts.
+    @brief Computes theoretical clear-sky solar radiation based on UTC time of day,
+           day of the year, and geographical coordinates to prevent daylight saving time shifts.
 
     @param timestamps Array of timestamps (strings or datetime objects).
     @param lat Latitude of the weather station in decimal degrees.
@@ -79,8 +79,8 @@ def fetch_and_resample_ecowitt(
     env: WaidBoot, start_date: str, end_date: str
 ) -> pd.DataFrame:
     """
-    Extracts raw Ecowitt station data, applies numeric type casting, 
-    resampling to uniform time slots, and bounded time interpolation.
+    @brief Extracts raw Ecowitt station data, applies numeric type casting, 
+           resampling to uniform time slots, and bounded time interpolation.
 
     @param env WaidBoot configuration instance.
     @param start_date Start window string for data extraction.
@@ -120,10 +120,8 @@ def fetch_and_resample_ecowitt(
             "No local station records retrieved from database for the specified window."
         )
 
-    target_tz = env.tz_timezone
     df_eco_raw["timestamp"] = (
         pd.to_datetime(df_eco_raw["timestamp"], utc=True)
-        .dt.tz_convert(target_tz)
         .dt.tz_localize(None)
     )
 
@@ -188,99 +186,103 @@ def fetch_and_resample_ecowitt(
     return df_eco_hourly.reset_index()
 
 
+# Hardware Nominal Default Specifications
+NOMINAL_SENSOR_SPECS = {
+    "ecowitt_temp": {"resolution": 0.1, "deadband": 0.0},
+    "ecowitt_rh": {"resolution": 1.0, "deadband": 0.0},
+    "ecowitt_pres": {"resolution": 0.1, "deadband": 0.0},
+    "ecowitt_wind": {"resolution": 0.1, "deadband": 0.2},
+    "ecowitt_solar": {"resolution": 0.1, "deadband": 0.0},
+    "ecowitt_rain": {"resolution": 0.1, "deadband": 0.2},
+}
+
+
 def get_station_metadata(
     env: WaidBoot,
-) -> tuple[str, str, int, int, int, dict]:
+) -> tuple[str, str, float, int, int, dict]:
     """
-    Queries station metadata, model constraints, and hardware sensor specifications 
-    from the SQLite Feature Store station_metadata table.
+    @brief Retrieves station metadata and configuration parameters from the database.
 
     @param env WaidBoot configuration instance.
-    @return Tuple containing station_id, station_name, elevation_m, min_training_days, retrain_window_days, sensor_specs.
+    @return Tuple containing (station_id, station_name, elevation, min_days, retrain_window, sensor_specs).
     """
-    station_id = env.ecowitt_station_id
-    query = """
-        SELECT station_name, elevation_m, min_training_days, retrain_window_days, sensor_specs
-        FROM station_metadata
-        WHERE station_id = ?
-    """
+    station_id = getattr(env, "ecowitt_station_id", "STATION_01")
+    station_name = "Local Home Weather Station"
+    elevation = 0.0
+    min_days = 14
+    retrain_window = 30
+    sensor_specs = NOMINAL_SENSOR_SPECS.copy()
+
     try:
         with sqlite3.connect(env.waid_db) as conn:
             cursor = conn.cursor()
-            cursor.execute(query, (station_id,))
+            cursor.execute(
+                """
+                SELECT station_id, station_name, elevation_m, min_training_days, 
+                       retrain_window_days, sensor_specs 
+                FROM station_metadata 
+                LIMIT 1
+            """
+            )
             row = cursor.fetchone()
 
-        if not row:
-            raise WError(
-                f"Station '{station_id}' not found in 'station_metadata'. Ensure setup pipeline has executed.",
-                code=WaidExit.DATA_FAIL,
-            )
+            if row:
+                station_id = row[0] or station_id
+                station_name = row[1] or station_name
+                elevation = float(row[2]) if row[2] is not None else elevation
+                min_days = int(row[3]) if row[3] is not None else min_days
+                retrain_window = (
+                    int(row[4]) if row[4] is not None else retrain_window
+                )
 
-        (
-            station_name,
-            elevation_m,
-            min_training_days,
-            retrain_window_days,
-            sensor_specs_json,
-        ) = row
+                if row[5]:
+                    try:
+                        sensor_specs = json.loads(row[5])
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Invalid JSON in sensor_specs column. Falling back to nominal defaults."
+                        )
 
-        default_specs = {
-            "ecowitt_temp": {"resolution": 0.1, "deadband": 0.0},
-            "ecowitt_rh": {"resolution": 1.0, "deadband": 0.0},
-            "ecowitt_pres": {"resolution": 0.1, "deadband": 0.0},
-            "ecowitt_wind": {"resolution": 0.1, "deadband": 0.2},
-            "ecowitt_solar": {"resolution": 1.0, "deadband": 0.0},
-            "ecowitt_rain": {"resolution": 0.1, "deadband": 0.1},
-        }
-
-        sensor_specs = (
-            json.loads(sensor_specs_json) if sensor_specs_json else default_specs
-        )
-
-        logger.info(
-            f"Loaded Station Metadata from DB: '{station_name}' ({station_id}) | "
-            f"Elevation: {elevation_m}m | Guardrails: Min Days={min_training_days}, Retrain Window={retrain_window_days}"
-        )
-        return (
-            station_id,
-            str(station_name),
-            int(elevation_m),
-            int(min_training_days),
-            int(retrain_window_days),
-            sensor_specs,
-        )
-
-    except sqlite3.OperationalError as e:
-        raise WError(
-            f"Failed to access 'station_metadata' table ({e}).",
-            code=WaidExit.DATA_FAIL,
-        )
     except sqlite3.Error as e:
-        raise WError(
-            f"Database error while fetching station metadata: {e}",
-            code=WaidExit.DATA_FAIL,
+        logger.warning(
+            f"Could not load station metadata from DB ({e}). Using system defaults."
         )
+
+    logger.info(
+        f"Loaded Station Metadata from DB: '{station_name}' ({station_id}) | "
+        f"Elevation: {elevation}m | Guardrails: Min Days={min_days}, Retrain Window={retrain_window}"
+    )
+
+    return (
+        station_id,
+        station_name,
+        elevation,
+        min_days,
+        retrain_window,
+        sensor_specs,
+    )
 
 
 def apply_physics_guardrails(
     data,
     feature: str = None,
     sensor_specs: dict = None,
-    env: WaidBoot = None,
+    env=None,  # Type-hint 'WaidBoot' if imported
     future_timestamps: list = None,
 ) -> np.ndarray:
     """
-    Unified engine for physics-based guardrails, hardware resolution quantization, and noise suppression.
-    Handles individual scalar values, Pandas Series, or full multi-dimensional prediction tensors.
+    @brief Unified engine for physics-based guardrails, hardware resolution quantization,
+           and noise suppression. Handles individual scalar values, Pandas Series, or
+           full multi-dimensional prediction tensors.
 
-    @param data Input array, series, or float to filter and discretize.
+    @param data Input array, series, list, or float to filter and discretize.
     @param feature Specific feature identifier string (e.g., 'temp', 'wind').
     @param sensor_specs Dictionary of hardware specifications per sensor.
     @param env WaidBoot configuration instance (required for full batch inference).
     @param future_timestamps List of future timestamp objects (required for clear-sky solar batch clipping).
-    @return Cleaned and quantized numpy array matching original shape.
+    @return Cleaned and quantized numpy array (or scalar) matching original shape.
     """
-    # Load default specs if not provided
+    # 1. Load default specs if not provided
     if sensor_specs is None:
         sensor_specs = {
             "ecowitt_temp": {"resolution": 0.1, "deadband": 0.0},
@@ -288,30 +290,38 @@ def apply_physics_guardrails(
             "ecowitt_pres": {"resolution": 0.1, "deadband": 0.0},
             "ecowitt_wind": {"resolution": 0.1, "deadband": 0.2},
             "ecowitt_solar": {"resolution": 1.0, "deadband": 0.0},
-            "ecowitt_rain": {"resolution": 0.2, "deadband": 0.2},
+            "ecowitt_rain": {"resolution": 0.1, "deadband": 0.2},
         }
 
-    # Handle Dashboard / Single-feature mode
+    # 2. Handle Dashboard / Single-feature mode
     if feature:
         spec = sensor_specs.get(
             f"ecowitt_{feature}", {"resolution": 0.1, "deadband": 0.0}
         )
-        res, db = spec["resolution"], spec["deadband"]
+        res = spec["resolution"]
+
+        # Ensure we work with arrays internally, preserving scalar input flags
+        is_scalar = np.isscalar(data)
+        val = np.asarray(data, dtype=float)
 
         # Apply non-negativity constraint (for all except temperature)
-        val = data if feature == "temp" else np.maximum(0.0, data)
+        if feature != "temp":
+            val = np.maximum(0.0, val)
 
         # Use resolution directly as sensitivity threshold instead of aggressive deadband
         threshold = res / 2.0
         val = np.where(val < threshold, 0.0, val)
 
         # Apply quantization based on sensor resolution
-        return np.round(val / res) * res
+        quantized = np.round(val / res) * res
+        return quantized.item() if is_scalar else quantized
 
-    # Handle Full Batch Inference mode
-    is_batch = len(data.shape) == 3
-    preds = data[0].copy() if is_batch else data.copy()
+    # 3. Handle Full Batch Inference mode
+    data_arr = np.asarray(data, dtype=float)
+    is_batch = data_arr.ndim == 3
+    preds = data_arr[0].copy() if is_batch else data_arr.copy()
 
+    # Pre-calculate theoretical clear-sky solar boundaries
     theo_solar_future = calculate_theoretical_solar_radiation(
         np.array(future_timestamps),
         env.ecowitt_latitude,
@@ -320,31 +330,37 @@ def apply_physics_guardrails(
     )
 
     features = ["temp", "rh", "pres", "wind", "solar", "rain"]
-    for i in range(preds.shape[0]):
-        for j, feat in enumerate(features):
-            # Apply guardrails iteratively for each feature
-            val = preds[i, j]
 
-            # Special case for solar radiation (clear-sky physical upper bound)
-            if feat == "solar":
-                if theo_solar_future[i] <= 0.0:
-                    preds[i, j] = 0.0
-                else:
-                    val = min(val, theo_solar_future[i])
-                    preds[i, j] = apply_physics_guardrails(
-                        val, feature=feat, sensor_specs=sensor_specs
-                    )
-            else:
-                preds[i, j] = apply_physics_guardrails(
-                    val, feature=feat, sensor_specs=sensor_specs
-                )
+    # Vectorized computation along columns (features) instead of nested loops
+    for j, feat in enumerate(features):
+        spec = sensor_specs.get(
+            f"ecowitt_{feat}", {"resolution": 0.1, "deadband": 0.0}
+        )
+        res = spec["resolution"]
+        threshold = res / 2.0
+
+        col = preds[:, j]
+
+        # Apply physical minimum boundary limits
+        if feat != "temp":
+            col = np.maximum(0.0, col)
+
+        # Apply physical maximum boundary limit (Solar Clear-Sky curve)
+        if feat == "solar":
+            col = np.where(
+                theo_solar_future <= 0.0, 0.0, np.minimum(col, theo_solar_future)
+            )
+
+        # Apply noise-suppression and resolution discretization
+        col = np.where(col < threshold, 0.0, col)
+        preds[:, j] = np.round(col / res) * res
 
     return np.expand_dims(preds, axis=0) if is_batch else preds
 
 
 def generate_period_range(begin_period: str, end_period: str) -> list[str]:
     """
-    Generates a contiguous list of YYYY-MM periods from start to end month inclusive.
+    @brief Generates a contiguous list of YYYY-MM periods from start to end month inclusive.
 
     @param begin_period Start month string in YYYY-MM format.
     @param end_period End month string in YYYY-MM format.
@@ -368,9 +384,9 @@ def get_last_inference_datetime(
     db_path: Path, table_name: str = "inference_forecast"
 ) -> datetime | None:
     """
-    Retrieves the execution timestamp of the last generated ML forecast as a datetime object.
-    Acts as the single source of truth for both inference orchestration skipping 
-    and UI status labeling.
+    @brief Retrieves the execution timestamp of the last generated ML forecast as a datetime object.
+           Acts as the single source of truth for both inference orchestration skipping 
+           and UI status labeling.
 
     @param db_path Path to the target SQLite database file.
     @param table_name Target forecast database table name (default: "inference_forecast").
@@ -398,3 +414,19 @@ def get_last_inference_datetime(
         )
 
     return None
+
+
+def is_in_docker() -> bool:
+    """
+    @brief Detects whether execution is occurring inside a Docker container.
+    
+    @return True if executing inside Docker, False otherwise.
+    """
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        with open("/proc/1/cgroup", "rt", encoding="utf-8") as f:
+            content = f.read()
+            return "docker" in content or "containerd" in content
+    except Exception:
+        return False
