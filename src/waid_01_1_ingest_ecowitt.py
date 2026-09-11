@@ -18,14 +18,16 @@ import urllib.request
 import urllib.error
 from loguru import logger
 
-# Import WaidBoot configuration and utility classes
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
 from boot import (
     WaidBoot,
-    validate_period,
     WError,
+    WaidExit,
+    validate_period,
 )
-
 
 def check_url_exists(url: str, timeout: int = 30) -> bool:
     """
@@ -87,7 +89,7 @@ def download_ecowitt_data(
     chunk_name = f"{base_name}A.csv"
     url = f"http://{ip}:{port}/{chunk_name}"
 
-    if not check_url_exists(url):
+    if not check_url_exists(url, env.ecowitt_gw_timeout_sec):
         logger.info(f"No data available ({chunk_name})")
         return env.waid_exit.DATA_FAIL
 

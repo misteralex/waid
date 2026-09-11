@@ -1,3 +1,11 @@
+# ==============================================================================
+# @file docker-compose.yml
+# @brief Docker Compose configuration for the WAID ARM production service.
+# @details Defines the waid-arm service container, environment variables,
+#          volume mounts for data/logs/config/dbt, build targets, and entrypoint
+#          execution for edge deployment environments.
+# ==============================================================================
+
 services:
   waid-arm:
     image: waid_arm:latest
@@ -7,6 +15,10 @@ services:
     environment:
       - PYTHONPATH=/app:/app/config:/app/src
       - WAID_SOURCE=/app
+      # Force dbt runtime directories outside /app/dbt
+      - DBT_LOG_PATH=/tmp/dbt_runtime/logs
+      - DBT_TARGET_PATH=/tmp/dbt_runtime/target
+      - DBT_PACKAGES_DIR=/tmp/dbt_runtime/dbt_packages
     build:
       context: ${WAID_SOURCE:-.}
       dockerfile: ${WAID_SOURCE}/docker/Dockerfile
@@ -18,9 +30,12 @@ services:
       - ${WAID_SOURCE}/data:/app/data
       - ${WAID_SOURCE}/logs:/app/logs
       - ${WAID_SOURCE}/config:/app/config
-      - ${WAID_SOURCE}/dbt/target:/app/dbt/target
-      - ${WAID_SOURCE}/dbt/logs:/app/dbt/logs
       - ${WAID_SOURCE}/deploy:/app/deploy
+      - ${WAID_SOURCE}/src:/app/src
       - ${WAID_SOURCE}/docker/arm/entrypoint.sh:/app/docker/entrypoint.sh:ro
+
+      # Bind-mount dbt sources from host for live development
+      - ${WAID_SOURCE}/dbt:/app/dbt
+
     entrypoint: ["/bin/bash", "/app/docker/entrypoint.sh"]
     command: ["python", "/app/waid_scheduler_lab.py"]

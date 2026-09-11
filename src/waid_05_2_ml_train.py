@@ -28,10 +28,10 @@ from tensorflow.keras.layers import LSTM, Dropout, Dense, Reshape
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import StandardScaler
 
-# Inject configuration path into python execution environment
-sys.path.append(
-    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
-)
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
 from boot import (
     WaidBoot,
     WError,

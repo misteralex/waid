@@ -17,38 +17,40 @@ import argparse
 from pathlib import Path
 from loguru import logger
 from datetime import datetime, timedelta
+import sqlite3
 
-# Import WaidBoot configuration and utility classes
-sys.path.append(
-    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
-)
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
 from boot import (
     WaidBoot,
     WError,
     WaidExit,
 )
 
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
+from waid_shared import (
+    generate_period_range,
+    get_last_inference_datetime,
+)
 
 def check_initial_setup_needed(env: WaidBoot) -> bool:
     """
-    Checks whether historical data or database setup is missing to trigger backfill.
-
-    @param env WaidBoot configuration context.
-    @return True if the database does not exist or requires initialization, False otherwise.
+    @brief Checks whether historical data or database setup is missing to trigger backfill.
+    @param env WaidBoot configuration instance.
+    @return True if initial setup (database or historical data) is needed, False otherwise.
     """
     db_path = Path(env.waid_db)
-    if not db_path.exists():
-        return True
-    return False
+    return not db_path.exists()
 
 
 def run_pipeline(mode: str, extra_args: list = None) -> int:
     """
-    Executes the WAID orchestration pipeline script with specific modes and arguments.
-
-    @param mode Pipeline execution mode (e.g., 'backfill', 'incremental').
-    @param extra_args Optional list of additional command-line arguments.
-    @return Process return code integer.
+    @brief Executes the WAID orchestration pipeline script with specific modes and arguments.
+    @param mode The run mode for the pipeline (e.g., "incremental", "backfill").
+    @param extra_args Optional; a list of additional arguments to pass to the pipeline script.
+    @return The exit code of the subprocess execution.
     """
     cmd = [sys.executable, "waid_orchestrate_lab.py", "--run-mode", mode]
     
@@ -56,7 +58,6 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
         extra_args = []
 
     raw_mock_now = os.environ.get("WAID_MOCK_NOW", "").strip()
-    # Ensure raw_mock_now is treated as active only if it represents a valid string timestamp
     is_mock_active = bool(raw_mock_now) and raw_mock_now.lower() not in ("none", "null", "false")
 
     if mode == "incremental" and "--period" not in extra_args:
@@ -69,7 +70,6 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     if extra_args:
         cmd.extend(extra_args)
 
-    # Propagate the simulation timestamp environment variable to the subprocess if active
     env_vars = os.environ.copy()
     if is_mock_active:
         env_vars["WAID_MOCK_NOW"] = raw_mock_now
@@ -80,18 +80,84 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     return result.returncode
 
 
+def clean_target_range(env: WaidBoot, start_dt: datetime, end_dt: datetime) -> None:
+    """
+    @brief Atomically cleans all predictions written within the interval [start_dt, end_dt]
+           across Lab DB, Local Deploy DB, and Supabase Cloud.
+    @param env WaidBoot configuration instance.
+    @param start_dt Start datetime for the cleaning range.
+    @param end_dt End datetime for the cleaning range.
+    @return None
+    """
+    str_begin = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    str_end = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    logger.warning(f"[RETRO_CLEAN] Cleaning target range from {str_begin} to {str_end}...")
+    
+    # 1. LAB DB (inference_forecast, inference_stats, inference_quality)
+    lab_db_path = Path(env.waid_db)
+    if lab_db_path.exists():
+        with sqlite3.connect(lab_db_path) as conn:
+            cursor = conn.cursor()
+            lab_tables = ["inference_forecast", "inference_stats", "inference_quality"]
+            logger.debug(f"[RETRO_CLEAN] Cleaning Lab DB tables: {lab_tables}")
+            for table in lab_tables:
+                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+                if cursor.fetchone():
+                    cursor.execute(
+                        f"DELETE FROM {table} WHERE datetime(timestamp) BETWEEN datetime(?) AND datetime(?)",
+                        (str_begin, str_end)
+                    )
+            conn.commit()
+
+    # 2. LOCAL DEPLOY DB (public_forecasts in waid_deploy.db)
+    deploy_db_path = Path(env.waid_data_dir) / env.deploy_db_file
+    if deploy_db_path.exists():
+        with sqlite3.connect(deploy_db_path) as conn:
+            logger.debug(f"[RETRO_CLEAN] Cleaning Local Deploy DB tables: public_forecasts")
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='public_forecasts'")
+            if cursor.fetchone():
+                cursor.execute(
+                    "DELETE FROM public_forecasts WHERE datetime(timestamp) BETWEEN datetime(?) AND datetime(?)",
+                    (str_begin, str_end)
+                )
+                conn.commit()
+
+    # 3. SUPABASE CLOUD (public_forecasts)
+    if env.deploy_mode == "cloud":
+        try:
+            from sqlalchemy import create_engine, text
+            from sqlalchemy.pool import NullPool
+            
+            db_config = env.active_db_config
+            schema_name = env.db_schema_target.lower()
+            supabase_url = (
+                f"postgresql+psycopg2://{db_config.user}:{db_config.password}"
+                f"@{db_config.host}:{db_config.port}/{db_config.dbname}?sslmode=require"
+            )
+            
+            engine = create_engine(supabase_url, poolclass=NullPool)
+            with engine.connect() as conn:
+                logger.debug(f"[RETRO_CLEAN] Cleaning Supabase DB tables: {schema_name}.public_forecasts")
+                delete_stmt = text(f"""
+                    DELETE FROM {schema_name}.public_forecasts 
+                    WHERE timestamp::timestamp BETWEEN :start_ts::timestamp AND :end_ts::timestamp;
+                """)
+                conn.execute(delete_stmt, {"start_ts": str_begin, "end_ts": str_end})
+                conn.commit()
+        except Exception as e:
+            logger.error(f"[RETRO_CLEAN] Failed to clean Supabase DB: {e}")
+
+
 def main() -> int:
     """
-    Main execution entry point for the continuous operational scheduler or retroactive simulator.
-
-    @return int Execution exit code integer.
+    @brief Main execution entry point for the continuous operational scheduler or retroactive simulator.
+    @return An integer representing the exit status (0 for success, non-zero for failure).
     """
     try:
-        # CLI Argument Parsing for Retroactive Mode
         parser = argparse.ArgumentParser(description="WAID Operational Scheduler & Retroactive Simulator")
         parser.add_argument("--retroactive", action="store_true", help="Enable retroactive simulation mode")
-        
-        # Support both new and legacy argument naming conventions
         parser.add_argument("--mock-begin", "--begin-period", dest="mock_begin", type=str, help="Start timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)")
         parser.add_argument("--mock-end", "--end-period", dest="mock_end", type=str, help="End timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)")
         args = parser.parse_args()
@@ -107,33 +173,42 @@ def main() -> int:
             begin_dt = datetime.strptime(args.mock_begin, "%Y-%m-%d %H:%M:%S")
             end_dt = datetime.strptime(args.mock_end, "%Y-%m-%d %H:%M:%S")
             current_dt = begin_dt
-
-            logger.info(f"WAID Retroactive Simulation started from {begin_dt} to {end_dt}")
+            logger.warning(f"[RETRO] Executing retroactive simulation from {begin_dt} to {end_dt}...")
             
-            # Initial setup execution
+            # Initial DBT setup
             extra_passthrough = ["--only-setup"]
             code = run_pipeline("incremental", extra_args=extra_passthrough)
             if code != 0:
                 logger.error(f"Pipeline failed at DBT setup step with exit code {code}")
 
             try:
-                while current_dt <= end_dt:
+                # 1. Initial Broad Cleaning of the entire interval
+                if env.retro_cleanup:
+                    logger.warning(f"[RETRO CLEAN] Executing initial broad cleaning from {begin_dt} to {end_dt}...")
+                    clean_target_range(env, begin_dt, end_dt)
+
+                # 2. Retroactive loop with preventive cleaning at each step
+                while current_dt < end_dt:
                     mock_now_str = current_dt.strftime("%Y-%m-%d %H:%M:%S")
                     os.environ["WAID_MOCK_NOW"] = mock_now_str
                     
+                    # Calculate the forecast horizon interval for this step
+                    forecast_horizon_end = current_dt + timedelta(hours=env.mock_interval_hours)
+                    
+                    # Preventive cleaning of the window we are about to overwrite
+                    clean_target_range(env, current_dt, forecast_horizon_end)
+                    
                     logger.info(f"=== [RETROACTIVE STEP] Processing timestamp: {mock_now_str} ===")
                     
-                    # Pass simulation flags to the orchestrator
-                    extra_passthrough = ["--skip-ingestion-deploy", "--mock-now", mock_now_str]
+                    extra_passthrough = ["--skip-ingestion-ml-deploy", "--mock-now", mock_now_str]
                     code = run_pipeline("incremental", extra_args=extra_passthrough)
                     
                     if code != 0:
                         logger.error(f"Pipeline failed at retroactive step {mock_now_str} with exit code {code}")
                     
-                    # Advance by the configured interval
                     current_dt += timedelta(hours=env.mock_interval_hours)
 
-                # Publication step at simulation end
+                # Final publication step
                 logger.info("Executing final publication step (waid_08_1_viz_streamlit_app)...")
                 pub_code = run_pipeline("incremental", extra_args=["--start-from", "waid_08_1_viz_streamlit_app", "--skip-setup"])                
                 if pub_code == 0:
@@ -142,7 +217,6 @@ def main() -> int:
                     logger.error(f"Publication step failed with code {pub_code}")
 
             finally:
-                # Cleanup environment variables after simulation completion
                 os.environ.pop("WAID_MOCK_NOW", None)
                 logger.info("WAID Retroactive Simulation completed and environment cleaned up.")
 
@@ -152,42 +226,34 @@ def main() -> int:
         logger.info("WAID Continuous Operational Scheduler started.")
         interval_hours = env.scheduled_interval_hours
 
-        # 1. Handle Initial Setup / Backfill on first boot
         if check_initial_setup_needed(env):
             logger.warning("Initial setup detected: No database or historical data found.")
             logger.info("Triggering initial BACKFILL phase...")
-            logger.info(
-                f"Backfill period: {env.backfill_begin_period.strftime('%Y-%m')} to {env.backfill_end_period.strftime('%Y-%m')}"
-            )
             backfill_code = run_pipeline(
                 "backfill", 
                 ["--begin-period", env.backfill_begin_period.strftime("%Y-%m"), 
                  "--end-period", env.backfill_end_period.strftime("%Y-%m")]
             )
-            
-            if backfill_code == 0:
-                logger.success("Initial backfill completed successfully. Model trained and ready.")
-            else:
+            if backfill_code != 0:
                 logger.error("Initial backfill failed. Check logs for details.")
         else:
             logger.info("Existing environment detected. Skipping initial backfill.")
 
-        # 2. Continuous Operational Loop (Incremental & Forecasting)
         while True:
             logger.info("Triggering scheduled incremental WAID pipeline run...")
             try:
-                code = run_pipeline("incremental")
+                extra_passthrough = ["--skip-ingestion-ml-deploy"]
+                code = run_pipeline("incremental", extra_args=extra_passthrough)
                 if code == 0:
                     logger.success("Scheduled incremental run completed successfully.")
                 else:
                     logger.error(f"Pipeline run finished with non-zero exit code: {code}")
-                    
             except Exception as e:
                 logger.error(f"Critical error during pipeline execution: {e}")
                 return WaidExit.CRITICAL_FAIL
                 
             logger.info(f"Sleeping for {interval_hours :.0f} hours until next execution...")
-            time.sleep(interval_hours*3600)
+            time.sleep(interval_hours * 3600)
         
     except WError as e:
         logger.error(f"[WAID ERROR] {e.message}")

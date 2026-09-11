@@ -16,20 +16,20 @@ import sys
 import sqlite3
 import argparse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import xarray as xr
 from loguru import logger
 
-# Inject configuration path into python execution environment
-sys.path.append(
-    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
-)
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
 from boot import (
     WaidBoot,
-    WaidExit,
     WError,
+    WaidExit,
     validate_period,
 )
 
@@ -126,7 +126,7 @@ def perform_matching_with_ecowitt(
     start_date = period.strftime("%Y-%m-01 00:00:00")
     
     # Determine upper bound: current time if current month, otherwise end of month
-    current_time = datetime.now()
+    current_time = datetime.now(timezone.utc).replace(tzinfo=None)
     if period.year == current_time.year and period.month == current_time.month:
         end_date = current_time.strftime("%Y-%m-%d %H:%M:%S")
     else:

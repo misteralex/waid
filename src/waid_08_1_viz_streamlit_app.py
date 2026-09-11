@@ -2,8 +2,9 @@
 
 """
 @file waid_08_1_viz_streamlit_app.py
-@brief Streamlit public analytics dashboard featuring dedicated tabs for all 6 weather features and 3-way comparisons,
-       integrated with automated deployment packaging, dynamic DB loading (SQLite/Supabase), and standard error handling.
+@brief Streamlit public analytics dashboard featuring dedicated tabs for weather features and 3-way comparisons.
+@details Integrates automated deployment packaging, dynamic database query resolution (SQLite/Supabase),
+         and standard operational error handling for the WAID framework.
 @author AF
 @date 2026
 """
@@ -17,6 +18,7 @@ import pandas as pd
 import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 import plotly.graph_objects as go
+import numpy as np
 from pathlib import Path
 from loguru import logger
 from sqlalchemy import create_engine, text
@@ -57,11 +59,12 @@ from boot import WaidBoot, WError, WaidExit
 # Import shared utilities from Single Source of Truth inside src/
 from waid_shared import get_last_inference_datetime
 
+
 def get_deployment_status() -> str:
     """
-    @brief Checks whether the deployment directory exists and is up to date relative to the source script.
-    
-    @return Deployment status identifier ("MISSING", "OUTDATED", "SYNCED", or "UNKNOWN").
+    @brief Evaluates the deployment package sync status relative to the source script.
+    @details Checks whether the deployment directory exists and if the source script mtime is newer.
+    @return Deployment status identifier string: "MISSING", "OUTDATED", "SYNCED", or "UNKNOWN".
     """
     try:
         env = WaidBoot()
@@ -78,11 +81,12 @@ def get_deployment_status() -> str:
     except Exception:
         return "UNKNOWN"
 
+
 def run_deployment_setup(env: WaidBoot) -> None:
     """
-    @brief Generates or updates the target deployment directory and assets.
-    
-    @param env WaidBoot configuration instance.
+    @brief Generates or updates the standalone target deployment package.
+    @details Copies database dependencies, updates source script headers, and writes requirements.txt.
+    @param env WaidBoot configuration instance containing system environment settings.
     """
     deploy_dir = Path(env.deploy_dir)
     src_script = Path(__file__).resolve()
@@ -128,11 +132,12 @@ def run_deployment_setup(env: WaidBoot) -> None:
 
     logger.success("Deployment package successfully created!")
 
+
 @st.cache_data(ttl=300)
 def get_available_dates() -> list:
     """
-    @brief Fetches only the distinct list of available dates from the database for fast dropdown rendering.
-    
+    @brief Queries distinct dates available in the forecasts database for selector UI elements.
+    @details Selects distinct timestamps from public_forecasts using Supabase or SQLite based on deployment mode.
     @return Sorted list of date strings (YYYY-MM-DD) in descending order.
     """
     try:
@@ -156,7 +161,8 @@ def get_available_dates() -> list:
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
 
-            query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {env.db_schema_target}.public_forecasts ORDER BY target_date DESC;")
+            schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
+            query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {schema_prefix}public_forecasts ORDER BY target_date DESC;")
             with engine.connect() as conn:
                 df_dates = pd.read_sql_query(query, conn)
 
@@ -186,22 +192,44 @@ def get_available_dates() -> list:
 
     return []
 
+
 @st.cache_data(ttl=300)
-def load_public_data_for_day(target_date: str) -> pd.DataFrame:
+def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.DataFrame:
     """
-    @brief Loads analytics data exclusively for the specified target date.
-    
-    @param target_date Target date string in YYYY-MM-DD format.
-    @return Cleaned pandas DataFrame containing day specific metrics and forecasts.
+    @brief Loads analytics records filtered by target date and specific weather feature key.
+    @details Fetches required columns for time series rendering to minimize payload and memory consumption.
+    @param target_date Target date string formatted as YYYY-MM-DD.
+    @param feature Optional weather feature key (e.g., 'temp', 'rh', 'pres', 'wind', 'solar', 'rain').
+    @return Cleaned pandas DataFrame populated with metric and forecast columns.
     """
     try:
         env = WaidBoot()
         deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
+        target_tz = getattr(env, "tz_timezone", "UTC")
     except Exception:
         deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+        target_tz = "UTC"
 
-    start_ts = f"{target_date} 00:00:00"
-    end_ts = f"{target_date} 23:59:59"
+    local_start = pd.Timestamp(f"{target_date} 00:00:00", tz=target_tz)
+    local_end = pd.Timestamp(f"{target_date} 23:59:59", tz=target_tz)
+
+    start_ts = local_start.tz_convert('UTC').strftime("%Y-%m-%d %H:%M:%S")
+    end_ts = local_end.tz_convert('UTC').strftime("%Y-%m-%d %H:%M:%S")
+
+    # Select target feature columns only to minimize query payload and memory usage
+    if feature:
+        columns_to_select = [
+            "timestamp",
+            f"pred_{feature}",
+            f"diff_{feature}",
+            f"historical_bias_{feature}",
+            f"drift_vs_bias_{feature}",
+            f"{feature}_era5",
+            f"abs_error_{feature}"
+        ]
+        select_clause = ", ".join(columns_to_select)
+    else:
+        select_clause = "*"
 
     if deploy_mode == "cloud":
         try:
@@ -218,8 +246,9 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
 
+            schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
             query = text(f"""
-                SELECT * FROM {env.db_schema_target}.public_forecasts 
+                SELECT {select_clause} FROM {schema_prefix}public_forecasts 
                 WHERE timestamp >= :start_ts AND timestamp <= :end_ts 
                 ORDER BY timestamp ASC;
             """)
@@ -240,7 +269,7 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
 
         try:
             with sqlite3.connect(db_path) as conn:
-                query = "SELECT * FROM public_forecasts WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC"
+                query = f"SELECT {select_clause} FROM public_forecasts WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC"
                 df = pd.read_sql_query(query, conn, params=(start_ts, end_ts))
         except Exception as e:
             st.error(f"Local SQLite database error: {e}")
@@ -249,16 +278,15 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    numeric_cols = [
-        'pred_temp', 'pred_rh', 'pred_pres', 'pred_wind', 'pred_rain', 'pred_solar',
-        'diff_temp', 'diff_rh', 'diff_pres', 'diff_wind', 'diff_rain', 'diff_solar',
-        'historical_bias_temp', 'historical_bias_rh', 'historical_bias_pres', 
-        'historical_bias_wind', 'historical_bias_rain', 'historical_bias_solar',
-        'drift_vs_bias_temp', 'drift_vs_bias_rh', 'drift_vs_bias_pres', 
-        'drift_vs_bias_wind', 'drift_vs_bias_rain', 'drift_vs_bias_solar',
-        'temp_era5', 'rh_era5', 'pres_era5', 'wind_era5', 'rain_era5', 'solar_era5',
-        'abs_error_temp', 'abs_error_rh', 'abs_error_pres', 'abs_error_wind', 'abs_error_rain', 'abs_error_solar'
-    ]
+    # Numeric conversion for selected feature columns
+    target_keys = [feature] if feature else ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']
+    numeric_cols = []
+    for k in target_keys:
+        numeric_cols.extend([
+            f'pred_{k}', f'diff_{k}', f'historical_bias_{k}', 
+            f'drift_vs_bias_{k}', f'{k}_era5', f'abs_error_{k}'
+        ])
+
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -267,11 +295,24 @@ def load_public_data_for_day(target_date: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def check_era5_availability(target_date: str) -> bool:
+    """
+    @brief Evaluates if ERA5 reanalysis ground truth data is populated for a target date.
+    @param target_date Target date string formatted as YYYY-MM-DD.
+    @return True if non-null ERA5 temperature values exist; False otherwise.
+    """
+    df = load_public_data_for_feature(target_date, feature='temp')
+    if not df.empty and 'temp_era5' in df.columns:
+        return df['temp_era5'].notnull().any()
+    return False
+
+
+@st.cache_data(ttl=300)
 def fetch_last_inference_timestamp() -> str:
     """
-    @brief Fetches the timestamp of the last calculated ML inference from public_forecasts.
-    
-    @return Formatted string representation of the last inference datetime, or 'N/A'.
+    @brief Retrieves the timestamp corresponding to the latest machine learning inference execution.
+    @details Checks created_at or timestamp columns in public_forecasts across configured storage backends.
+    @return Formatted timestamp string (YYYY-MM-DD HH:MM:SS) or "N/A" if unavailable.
     """
     try:
         env = WaidBoot()
@@ -296,13 +337,11 @@ def fetch_last_inference_timestamp() -> str:
 
             schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
             
-            # Primary attempt using created_at (ML model execution timestamp)
             try:
                 query = text(f"SELECT MAX(created_at) AS last_ts FROM {schema_prefix}public_forecasts;")
                 with engine.connect() as conn:
                     res = conn.execute(query).scalar()
             except Exception:
-                # Fallback to timestamp if created_at column is missing
                 query = text(f"SELECT MAX(timestamp) AS last_ts FROM {schema_prefix}public_forecasts;")
                 with engine.connect() as conn:
                     res = conn.execute(query).scalar()
@@ -313,7 +352,6 @@ def fetch_last_inference_timestamp() -> str:
             st.error(f"Error fetching last inference from Supabase: {e}")
             return "N/A"
     else:
-        # Fallback to local SQLite database
         base_dir = Path(__file__).resolve().parent
         cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
         local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
@@ -328,7 +366,6 @@ def fetch_last_inference_timestamp() -> str:
         if not db_path:
             return "N/A"
 
-        # Use shared utility function from waid_shared
         dt = get_last_inference_datetime(db_path, table_name="public_forecasts")
         if dt:
             return dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -336,11 +373,136 @@ def fetch_last_inference_timestamp() -> str:
     return "N/A"
 
 
+def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, unit: str, plotly_config: dict) -> None:
+    """
+    @brief Renders metrics cards and interactive Plotly visual comparisons for a weather feature tab.
+    @param env WaidBoot system environment configuration instance.
+    @param selected_date Target date string formatted as YYYY-MM-DD.
+    @param key Weather feature attribute identifier (e.g., 'temp', 'rh').
+    @param label Human-readable feature title for chart headers.
+    @param unit Measurement unit representation string (e.g., '°C', 'hPa').
+    @param plotly_config Dictionary containing standard Plotly figure display parameters.
+    """
+    df_day = load_public_data_for_feature(selected_date, feature=key)
+
+    if df_day.empty:
+        st.warning(f"No data available for {label} on {selected_date}.")
+        return
+
+    # Parse and convert UTC timestamp to station local time
+    df_day['ts_target'] = pd.to_datetime(df_day['timestamp'], errors='coerce')
+    if df_day['ts_target'].dt.tz is None:
+        df_day['ts_target'] = df_day['ts_target'].dt.tz_localize('UTC')
+
+    target_tz = getattr(env, "tz_timezone", None)
+    if not target_tz:
+        raise WError(
+            f"Failed to identifier attribute 'tz_timezone' or not defined: {e}", code=WaidExit.DATA_FAIL
+        )
+
+    # ts_display contains the date/time converted to the local timezone
+    df_day['ts_display'] = df_day['ts_target'].dt.tz_convert(target_tz).dt.tz_localize(None)
+
+    # Reconstruct local sensor reading (Ecowitt)
+    if f'pred_{key}' in df_day.columns and f'diff_{key}' in df_day.columns:
+        valid_mask = df_day[f'diff_{key}'].notnull()
+        raw_actual = df_day[f'pred_{key}'] - df_day[f'diff_{key}']
+        
+        df_day[f'ecowitt_{key}'] = np.nan
+        if key in ['wind', 'rain', 'solar']:
+            df_day.loc[valid_mask, f'ecowitt_{key}'] = raw_actual[valid_mask].clip(lower=0.0)
+        elif key == 'rh':
+            df_day.loc[valid_mask, f'ecowitt_{key}'] = raw_actual[valid_mask].clip(lower=0.0, upper=100.0)
+        else:
+            df_day.loc[valid_mask, f'ecowitt_{key}'] = raw_actual[valid_mask]
+
+    st.subheader(f"Feature: {label} ({unit})")
+    
+    col1, col2, col3 = st.columns(3)
+
+    mae_series = df_day[f'abs_error_{key}'].dropna() if f'abs_error_{key}' in df_day.columns else pd.Series()
+    mae_era5 = mae_series.mean() if not mae_series.empty else None
+
+    bias_series = df_day[f'historical_bias_{key}'].dropna() if f'historical_bias_{key}' in df_day.columns else pd.Series()
+    bias = bias_series.mean() if not bias_series.empty else 0.0
+
+    drift_series = df_day[f'drift_vs_bias_{key}'].dropna() if f'drift_vs_bias_{key}' in df_day.columns else pd.Series()
+    drift = drift_series.mean() if not drift_series.empty else 0.0
+
+    with col1:
+        st.metric("MAE (Pred vs ERA5)", f"{mae_era5:.2f} {unit}" if mae_era5 is not None else "N/A (Pending ERA5)")
+    with col2:
+        st.metric("Historical Bias", f"{bias:+.2f} {unit}")
+    with col3:
+        st.metric("Drift vs Bias", f"{drift:+.2f} {unit}")
+
+    st.markdown("---")
+
+    # Using ts_display for all plots ensures that the x-axis reflects the local timezone of the station.
+    st.markdown("#### 1. Model Prediction vs Local Sensor (Ecowitt)")
+    fig1 = go.Figure()
+    fig1.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
+    if f'ecowitt_{key}' in df_day.columns:
+        fig1.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2, dash='dot')))
+    fig1.update_layout(
+        height=320, 
+        hovermode="x unified", 
+        yaxis_title=unit, 
+        margin=dict(l=10, r=10, t=25, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(
+        fig1, 
+        width="stretch", 
+        config=plotly_config, 
+        key=f"plotly_fig1_{key}_{selected_date}"
+    )
+
+    st.markdown("#### 2. Local Sensor (Ecowitt) vs ERA5 Reanalysis Truth")
+    fig2 = go.Figure()
+    if f'ecowitt_{key}' in df_day.columns:
+        fig2.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2)))
+    if f'{key}_era5' in df_day.columns:
+        fig2.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
+    fig2.update_layout(
+        height=320, 
+        hovermode="x unified", 
+        yaxis_title=unit, 
+        margin=dict(l=10, r=10, t=25, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(
+        fig2, 
+        width="stretch", 
+        config=plotly_config, 
+        key=f"plotly_fig2_{key}_{selected_date}"
+    )
+
+    st.markdown("#### 3. Model Prediction vs ERA5 Reanalysis Truth")
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
+    if f'{key}_era5' in df_day.columns:
+        fig3.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
+    fig3.update_layout(
+        height=320, 
+        hovermode="x unified", 
+        yaxis_title=unit, 
+        margin=dict(l=10, r=10, t=25, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(
+        fig3, 
+        width="stretch", 
+        config=plotly_config, 
+        key=f"plotly_fig3_{key}_{selected_date}"
+    )
+    
+
 def run_dashboard(env: WaidBoot) -> None:
     """
-    @brief Executes the Streamlit interactive visualization dashboard logic.
+    @brief Assembles and executes main Streamlit web application components and layout.
+    @param env WaidBoot system environment configuration instance.
     """
-
     st.set_page_config(page_title="WAID Public Analytics", layout="wide")
 
     # Responsive CSS styling for mobile devices (< 768px)
@@ -376,43 +538,13 @@ def run_dashboard(env: WaidBoot) -> None:
     st.sidebar.header("Configuration")
     selected_date = st.sidebar.selectbox("Select Target Day:", available_dates, index=default_index)
 
-    # Metric: Last calculated ML inference timestamp
     last_inf_ts = fetch_last_inference_timestamp()
     st.sidebar.markdown(f"**Last ML Inference**  \n<small>{last_inf_ts}</small>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
 
-    df_day = load_public_data_for_day(selected_date)
-    if df_day.empty:
-        st.warning(f"No data available for {selected_date}.")
-        return
-
-    # Robust timestamp parsing with explicit UTC localization and conversion to local timezone
-    df_day['ts_target'] = pd.to_datetime(df_day['timestamp'], errors='coerce')
-    if df_day['ts_target'].dt.tz is None:
-        df_day['ts_target'] = df_day['ts_target'].dt.tz_localize('UTC')
-    
-    target_tz = env.tz_timezone
-    df_day['ts_target'] = df_day['ts_target'].dt.tz_convert(target_tz).dt.tz_convert(None)  
-
-    for k in ['temp', 'rh', 'pres', 'wind', 'rain', 'solar']:  
-        if f'pred_{k}' in df_day.columns and f'diff_{k}' in df_day.columns:
-            # Reconstruct Actual = Pred - Diff
-            raw_actual = df_day[f'pred_{k}'] - df_day[f'diff_{k}']
-            
-            if k in ['wind', 'rain', 'solar']:
-                # Zero-bounded features (>= 0.0)
-                df_day[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0)
-            elif k == 'rh':
-                # Relative Humidity bounded strictly between 0% and 100%
-                df_day[f'ecowitt_{k}'] = raw_actual.clip(lower=0.0, upper=100.0)
-            else:
-                # Temperature and Pressure (no hard zero boundary)
-                df_day[f'ecowitt_{k}'] = raw_actual
-
-    # Extract ERA5 presence for the loaded target day
-    era5_available = df_day[df_day['temp_era5'].notnull()]['ts_target'] if 'temp_era5' in df_day.columns else pd.Series()
-
-    if not era5_available.empty:
+    # Quick ERA5 status check
+    is_era5_ready = check_era5_availability(selected_date)
+    if is_era5_ready:
         st.sidebar.info(
             f"**ERA5 Status:** Ground truth ERA5 data available for selected day `{selected_date}`."
         )
@@ -430,7 +562,6 @@ def run_dashboard(env: WaidBoot) -> None:
         "rain": ("Hourly Rain", "mm")
     }
 
-    # Universal mobile-friendly Plotly configuration
     plotly_config = {
         'responsive': True,
         'displayModeBar': False,
@@ -439,99 +570,22 @@ def run_dashboard(env: WaidBoot) -> None:
 
     feature_tabs = st.tabs([label for label, unit in features.values()])
     
+    # Lazy loading: render content only when the user selects a specific tab
     for idx, (key, (label, unit)) in enumerate(features.items()):
         with feature_tabs[idx]:
-            st.subheader(f"Feature: {label} ({unit})")
-            
-            col1, col2, col3 = st.columns(3)
-
-            # Strict NaN handling to prevent '+nan' display on UI metrics
-            mae_series = df_day[f'abs_error_{key}'].dropna() if f'abs_error_{key}' in df_day.columns else pd.Series()
-            mae_era5 = mae_series.mean() if not mae_series.empty else None
-
-            bias_series = df_day[f'historical_bias_{key}'].dropna() if f'historical_bias_{key}' in df_day.columns else pd.Series()
-            bias = bias_series.mean() if not bias_series.empty else 0.0
-
-            drift_series = df_day[f'drift_vs_bias_{key}'].dropna() if f'drift_vs_bias_{key}' in df_day.columns else pd.Series()
-            drift = drift_series.mean() if not drift_series.empty else 0.0
-
-            with col1:
-                st.metric("MAE (Pred vs ERA5)", f"{mae_era5:.2f} {unit}" if mae_era5 is not None else "N/A (Pending ERA5)")
-            with col2:
-                st.metric("Historical Bias", f"{bias:+.2f} {unit}")
-            with col3:
-                st.metric("Drift vs Bias", f"{drift:+.2f} {unit}")
-
-            st.markdown("---")
-
-            st.markdown(f"#### 1. Model Prediction vs Local Sensor (Ecowitt)")
-            fig1 = go.Figure()
-            fig1.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
-            if f'ecowitt_{key}' in df_day.columns:
-                fig1.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2, dash='dot')))
-            fig1.update_layout(
-                height=320, 
-                hovermode="x unified", 
-                yaxis_title=unit, 
-                margin=dict(l=10, r=10, t=25, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(
-                fig1, 
-                width="stretch", 
-                config=plotly_config, 
-                key=f"plotly_fig1_{key}_{selected_date}"
-            )
-
-            st.markdown(f"#### 2. Local Sensor (Ecowitt) vs ERA5 Reanalysis Truth")
-            fig2 = go.Figure()
-            if f'ecowitt_{key}' in df_day.columns:
-                fig2.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'ecowitt_{key}'], name='Actual (Ecowitt)', mode='lines+markers', line=dict(color='#2ca02c', width=2)))
-            if f'{key}_era5' in df_day.columns:
-                fig2.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
-            fig2.update_layout(
-                height=320, 
-                hovermode="x unified", 
-                yaxis_title=unit, 
-                margin=dict(l=10, r=10, t=25, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(
-                fig2, 
-                width="stretch", 
-                config=plotly_config, 
-                key=f"plotly_fig2_{key}_{selected_date}"
-            )
-
-            st.markdown(f"#### 3. Model Prediction vs ERA5 Reanalysis Truth")
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
-            if f'{key}_era5' in df_day.columns:
-                fig3.add_trace(go.Scatter(x=df_day['ts_target'], y=df_day[f'{key}_era5'], name='ERA5 Truth', mode='lines+markers', line=dict(color='#d62728', width=2, dash='dash')))
-            fig3.update_layout(
-                height=320, 
-                hovermode="x unified", 
-                yaxis_title=unit, 
-                margin=dict(l=10, r=10, t=25, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(
-                fig3, 
-                width="stretch", 
-                config=plotly_config, 
-                key=f"plotly_fig3_{key}_{selected_date}"
-            )
+            render_feature_tab(env, selected_date, key, label, unit, plotly_config)
 
     st.markdown("---")
     with st.expander("View Raw Database Records & Metrics"):
-        st.dataframe(df_day, width="stretch")
-        
+        # Load full daily table only if requested by user expanding the section
+        df_full = load_public_data_for_feature(selected_date, feature=None)
+        st.dataframe(df_full, width="stretch")
+
 
 def main() -> int:
     """
-    @brief Main execution entry point for Streamlit dashboard and deploy packaging.
-
-    @return Process exit status code.
+    @brief Main entry point parsing command-line parameters and initiating workflow execution.
+    @return Process exit code (0 for success, non-zero for errors).
     """
     try:      
         parser = argparse.ArgumentParser(description="WAID Streamlit Dashboard & Deploy Packager")
@@ -568,6 +622,7 @@ def main() -> int:
         return WaidExit.INTERNAL_ERROR
 
     return WaidExit.SUCCESS
+
 
 if __name__ == "__main__":
     sys.exit(main())

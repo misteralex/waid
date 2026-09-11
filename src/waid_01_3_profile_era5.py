@@ -18,16 +18,16 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-# Inject configuration path into python execution environment
-sys.path.append(
-    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
-)
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
 from boot import (
     WaidBoot,
-    validate_period,
     WError,
+    WaidExit,
+    validate_period,
 )
-
 
 def check_era5_data(env: WaidBoot, args: argparse.Namespace) -> int:
     """

@@ -26,17 +26,17 @@ from prefect.context import TaskRunContext
 from prefect.exceptions import PrefectHTTPStatusError
 from prefect.settings import PREFECT_API_URL, temporary_settings
 
-# Import Boot Configuration
-sys.path.append(
-    str(
-        Path(
-            os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])
-        ).resolve()
-        / "config"
-    )
-)
-from boot import WaidBoot, WaidExit, validate_period
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
 
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
+from boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
 from waid_shared import (
     generate_period_range,
     get_last_inference_datetime,

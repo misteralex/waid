@@ -21,21 +21,20 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
 from loguru import logger
 
-# Import WaidBoot configuration and utility classes
-sys.path.append(
-    str(
-        Path(
-            os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])
-        ).resolve()
-        / "config"
-    )
-)
-from boot import WError, WaidBoot, WaidExit
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
 
-# Import shared utilities from Single Source of Truth
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
+from boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+    validate_period,
+)
+
+sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
 from waid_shared import (
     generate_period_range,
     get_last_inference_datetime,
@@ -128,7 +127,7 @@ class PipelineRunner:
 
         if self.mock_now:
             logger.info(
-                f"[MOCK MODE] Running with WAID_MOCK_NOW={self.mock_now}"
+                f"[MOCK_MODE] Running with WAID_MOCK_NOW={self.mock_now}"
             )
 
         proc_env = os.environ.copy()
@@ -458,7 +457,7 @@ def waid_06_4_inference_quality(runner: PipelineRunner, args: list) -> int:
         "python",
         str(runner.env.tools_dir / "waid_06_4_inference_quality.py"),
     ]
-    if runner.mock_now:
+    if runner.mock_now and "--mock-now" not in args:
         cmd.extend(["--mock-now", runner.mock_now])
 
     return runner.run_command(cmd)
@@ -470,7 +469,7 @@ def waid_07_1_export_deploy_db(runner: PipelineRunner, args: list) -> int:
         "python",
         str(runner.env.tools_dir / "waid_07_1_export_deploy_db.py"),
     ]
-    if runner.mock_now:
+    if runner.mock_now and "--mock-now" not in args:
         cmd.extend(["--mock-now", runner.mock_now])
 
     return runner.run_command(cmd)
@@ -576,9 +575,9 @@ def parse_and_validate_arguments():
         help="Skip data ingestion and profiling steps (01_1, 01_2, 01_3)",
     )
     parser.add_argument(
-        "--skip-ingestion-deploy",
+        "--skip-ingestion-ml-deploy",
         action="store_true",
-        help="Skip raw data ingestion and final visualization/deployment steps (01 and 08)",
+        help="Skip ingestion, ML training, and deploy/viz steps (executes inference & quality sequence only)",
     )
     parser.add_argument(
         "--mock-now",
@@ -677,14 +676,11 @@ def main() -> int:
     env = WaidBoot()
     runner = PipelineRunner(env, mock_now=parsed_args.mock_now)
 
-    db_path = (
-        os.getenv("WAID_DB_MOCK_FILE")
-        if env.waid_sim_mode
-        else os.getenv("WAID_DB_FILE")
-    )
-    if parsed_args.skip_ingestion_deploy and not Path(db_path).exists():
+    db_path = env.waid_db
+    
+    if parsed_args.skip_ingestion_ml_deploy and not Path(db_path).exists():
         logger.warning(
-            f"Cannot skip Data Ingestion / Mock Update. Required path: {db_path}"
+            f"Cannot run inference-only mode. Required DB path not found: {db_path}"
         )
         sys.exit(runner.env.waid_exit.INPUT_FAIL)
 
@@ -693,9 +689,9 @@ def main() -> int:
             f"Simulation mode active. Running mock data generation using mock database ({env.waid_db})"
         )
 
-    if parsed_args.skip_ingestion_deploy:
+    if parsed_args.skip_ingestion_ml_deploy:
         logger.warning(
-            "Skipping data ingestion and final viz/deploy steps (--skip-ingestion-deploy flag active)"
+            "Skipping Ingestion, ML Training, and Deploy (--skip-ingestion-ml-deploy active). Running Inference sequence only."
         )
     else:
         data_dir = Path(env.waid_data_dir)
@@ -802,9 +798,9 @@ def main() -> int:
 
     if env.waid_sim_mode:
         data_prep_steps.append(waid_mock_update_ecowitt)
-    elif parsed_args.skip_ingestion or parsed_args.skip_ingestion_deploy:
+    elif parsed_args.skip_ingestion or parsed_args.skip_ingestion_ml_deploy:
         logger.warning(
-            "Skipping raw data ingestion and profiling steps (--skip-ingestion or --skip-ingestion-deploy active)"
+            "Skipping raw data ingestion and profiling steps (--skip-ingestion or --skip-ingestion-ml-deploy active)"
         )
     else:
         data_prep_steps.extend(
@@ -871,52 +867,73 @@ def main() -> int:
     if parsed_args.period:
         incremental_args.extend(["--period", parsed_args.period])
 
-    if not parsed_args.skip_ingestion_deploy:
-        if parsed_args.run_mode == "backfill":
-            start_p = parsed_args.begin_period or parsed_args.period
-            end_p = parsed_args.end_period or parsed_args.period
+    if parsed_args.skip_ingestion_ml_deploy:
+        # Fast path: executes inference and export chains ONLY
+        inference_only_steps = [
+            waid_06_1_inference_forecast,
+            waid_06_2_inference_stats,
+            waid_06_3_dbt_inference_quality,
+            waid_06_4_inference_quality,
+            waid_07_1_export_deploy_db,
+        ]
 
-            periods = generate_period_range(start_p, end_p)
-            logger.debug(f"Starting BACKFILL execution for periods: {periods}")
-
-            for p in periods:
-                logger.info(
-                    f"--- Processing Data Preparation for period: {p} ---"
-                )
-                period_args = extra_passthrough_args + ["--period", p]
-                code = run_step_sequence(
-                    data_prep_steps,
-                    runner,
-                    period_args,
-                    start_from=parsed_args.start_from,
-                )
-                if code != runner.env.waid_exit.SUCCESS:
-                    logger.error(f"Backfill halted due to error in period {p}")
-                    return code
-
-            logger.info(
-                "Data preparation backfill completed. Starting Global Machine Learning & Deployment."
+        for step_func in inference_only_steps:
+            args_to_pass = (
+                step_06_1_args
+                if step_func.__name__ == "waid_06_1_inference_forecast"
+                else incremental_args
             )
-            ml_args = ["--period", end_p] if end_p else []
             code = run_step_sequence(
-                ml_and_inference_steps + export_and_deploy_steps,
+                [step_func],
                 runner,
-                ml_args,
-                start_from=parsed_args.start_from,
-            )
-
-        else:  # Incremental Mode
-            logger.debug("Starting INCREMENTAL execution")
-            code = run_step_sequence(
-                data_prep_steps,
-                runner,
-                incremental_args,
+                args_to_pass,
                 start_from=parsed_args.start_from,
             )
             if code != runner.env.waid_exit.SUCCESS:
+                break
+
+    elif parsed_args.run_mode == "backfill":
+        start_p = parsed_args.begin_period or parsed_args.period
+        end_p = parsed_args.end_period or parsed_args.period
+
+        periods = generate_period_range(start_p, end_p)
+        logger.debug(f"Starting BACKFILL execution for periods: {periods}")
+
+        for p in periods:
+            logger.info(
+                f"--- Processing Data Preparation for period: {p} ---"
+            )
+            period_args = extra_passthrough_args + ["--period", p]
+            code = run_step_sequence(
+                data_prep_steps,
+                runner,
+                period_args,
+                start_from=parsed_args.start_from,
+            )
+            if code != runner.env.waid_exit.SUCCESS:
+                logger.error(f"Backfill halted due to error in period {p}")
                 return code
 
-            # Execute ML & Inference steps (passing --skip-ml to 06_1 if required)
+        logger.info(
+            "Data preparation backfill completed. Starting Global Machine Learning & Deployment."
+        )
+        ml_args = ["--period", end_p] if end_p else []
+        code = run_step_sequence(
+            ml_and_inference_steps + export_and_deploy_steps,
+            runner,
+            ml_args,
+            start_from=parsed_args.start_from,
+        )
+
+    else:  # Standard Incremental Mode
+        logger.debug("Starting INCREMENTAL execution")
+        code = run_step_sequence(
+            data_prep_steps,
+            runner,
+            incremental_args,
+            start_from=parsed_args.start_from,
+        )
+        if code == runner.env.waid_exit.SUCCESS:
             for step_func in ml_and_inference_steps:
                 args_to_pass = (
                     step_06_1_args
@@ -930,45 +947,15 @@ def main() -> int:
                     start_from=parsed_args.start_from,
                 )
                 if code != runner.env.waid_exit.SUCCESS:
-                    return code
+                    break
 
-            code = run_step_sequence(
-                export_and_deploy_steps + viz_steps,
-                runner,
-                incremental_args,
-                start_from=parsed_args.start_from,
-            )
-    else:
-        code = run_step_sequence(
-            data_prep_steps,
-            runner,
-            incremental_args,
-            start_from=parsed_args.start_from,
-        )
-        if code != runner.env.waid_exit.SUCCESS:
-            return code
-
-        for step_func in ml_and_inference_steps:
-            args_to_pass = (
-                step_06_1_args
-                if step_func.__name__ == "waid_06_1_inference_forecast"
-                else incremental_args
-            )
-            code = run_step_sequence(
-                [step_func],
-                runner,
-                args_to_pass,
-                start_from=parsed_args.start_from,
-            )
-            if code != runner.env.waid_exit.SUCCESS:
-                return code
-
-        code = run_step_sequence(
-            export_and_deploy_steps,
-            runner,
-            incremental_args,
-            start_from=parsed_args.start_from,
-        )
+            if code == runner.env.waid_exit.SUCCESS:
+                code = run_step_sequence(
+                    export_and_deploy_steps + viz_steps,
+                    runner,
+                    incremental_args,
+                    start_from=parsed_args.start_from,
+                )
 
     if code == runner.env.waid_exit.SUCCESS:
         logger.success("--- Pipeline successfully terminated ---")
