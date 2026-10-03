@@ -20,7 +20,8 @@ import numpy as np
 import joblib
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import List, Tuple
 from loguru import logger
 import tensorflow as tf
 from tensorflow.keras import Sequential, Input
@@ -39,10 +40,16 @@ from boot import (
 )
 
 # Import shared utilities from Single Source of Truth
-from waid_shared import calculate_theoretical_solar_radiation, get_station_metadata
+from waid_shared import get_station_metadata
 
-def denormalize_predictions(y_scaler, preds_scaled: np.ndarray) -> np.ndarray:
-    """Denormalizes predictions using the provided y_scaler supporting 2D or 3D arrays."""
+
+def denormalize_predictions(y_scaler: StandardScaler, preds_scaled: np.ndarray) -> np.ndarray:
+    """Denormalizes predictions using the provided y_scaler supporting 2D or 3D arrays.
+
+    @param y_scaler Fitted StandardScaler instance for target outputs.
+    @param preds_scaled Scaled prediction numpy array (2D or 3D).
+    @return Denormalized numpy array matching original physical dimensions.
+    """
     original_shape = preds_scaled.shape
     if len(original_shape) == 3:
         batch_size, horizon, n_features = original_shape
@@ -54,9 +61,13 @@ def denormalize_predictions(y_scaler, preds_scaled: np.ndarray) -> np.ndarray:
 
 
 def ensure_model_registry_schema(env: WaidBoot) -> None:
+    """Ensures ml_model_registry table exists before performing registration operations.
+
+    @param env Initialized framework environment context (WaidBoot).
+    @return None
+    """
     station_id = env.ecowitt_station_id
     
-    """Ensures ml_model_registry table exists before performing registration operations."""
     create_model_registry_stmt = """
     CREATE TABLE IF NOT EXISTS ml_model_registry (
         model_version TEXT PRIMARY KEY,
@@ -83,9 +94,13 @@ def ensure_model_registry_schema(env: WaidBoot) -> None:
 
 
 def get_max_timestamp(env: WaidBoot) -> str:
-    """Retrieves maximum Ecowitt timestamp from staging database."""
+    """Retrieves maximum Ecowitt timestamp from staging database.
+
+    @param env Initialized framework environment context (WaidBoot).
+    @return ISO formatted maximum timestamp string or current UTC time fallback.
+    """
     query = "SELECT MAX(timestamp) FROM stg_ecowitt"
-    last_ecowitt_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    last_ecowitt_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     try:
         with sqlite3.connect(env.waid_db) as conn:
@@ -107,7 +122,15 @@ def check_retrain_required(
     latest_available_period: str, 
     min_training_days: int
 ) -> bool:
-    """Checks if a new training run is required based on registry status and minimum training interval."""
+    """Checks if a new training run is required based on registry status and minimum training interval.
+
+    @param env Initialized framework environment context (WaidBoot).
+    @param station_id Identifier of target station.
+    @param station_name Descriptive name of weather station.
+    @param latest_available_period String representation of latest dataset period (YYYY_MM).
+    @param min_training_days Minimum number of days required between training runs.
+    @return True if retraining should proceed, False otherwise.
+    """
     logger.info(f"Checking ML model registry status for Station: '{station_name}' ({station_id})...")
 
     query = """
@@ -127,8 +150,8 @@ def check_retrain_required(
             return True
 
         last_trained_at_str, last_trained_ts = row
-        last_trained_at = datetime.strptime(last_trained_at_str, "%Y-%m-%d %H:%M:%S")
-        days_since_last_training = (datetime.utcnow() - last_trained_at).days
+        last_trained_at = datetime.strptime(last_trained_at_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        days_since_last_training = (datetime.now(timezone.utc) - last_trained_at).days
 
         logger.info(f"Last model trained at: [{last_trained_at_str}] ({days_since_last_training} days ago)")
         logger.info(f"Minimum training interval / days guardrail: [{min_training_days}] days")
@@ -141,7 +164,7 @@ def check_retrain_required(
             )
             return False
 
-        if latest_available_period > last_trained_ts[:7]:
+        if latest_available_period.replace("_", "-") > last_trained_ts[:7]:
             logger.info("Newer telemetry period detected and training interval met! Triggering ML retraining...")
             return True
 
@@ -161,16 +184,25 @@ def register_trained_model(
     train_samples_count: int,
     val_loss_mse: float
 ) -> None:
-    """Registers the newly trained model version and artifacts into SQLite Feature Store."""
+    """Registers the newly trained model version and artifacts into SQLite Feature Store.
+
+    @param env Initialized framework environment context (WaidBoot).
+    @param station_id Identifier of weather station.
+    @param station_name Name of weather station.
+    @param latest_period Most recent training period string.
+    @param train_samples_count Total number of training sample windows.
+    @param val_loss_mse Best validation Mean Squared Error.
+    @return None
+    """
     waid_version = getattr(env, "waid_version", "v1.0.0")
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     trained_at = now.strftime("%Y-%m-%d %H:%M:%S")
     timestamp_tag = now.strftime("%Y%m%d_%H%M")
     
     model_version = f"{waid_version}_{latest_period}_{timestamp_tag}"
     
-    model_path = str(env.ml_models_dir /  env.ml_model_h5_file)
+    model_path = str(env.ml_models_dir / env.ml_model_h5_file)
     x_scaler_path = str(env.ml_models_dir / env.ml_input_scaler_pkl_file)
     y_scaler_path = str(env.ml_models_dir / env.ml_output_scaler_pkl_file)
     
@@ -218,79 +250,49 @@ def register_trained_model(
         raise WError(f"Failed to register model in SQLite Feature Store: {e}", code=WaidExit.DATA_FAIL)
 
 
-def get_start_index_for_period(period: str, db_timestamps: list) -> int:
-    """Finds the first index in the global timestamp array matching the period string."""
-    # Convert period format 'YYYY_MM' to 'YYYY-MM' to match database timestamps
-    formatted_period = period.replace("_", "-")
-    for idx, ts in enumerate(db_timestamps):
-        if ts.startswith(formatted_period):
-            return idx
-    raise WError(f"Critical: Period '{period}' not found in stg_ecowitt database timestamps.", code=WaidExit.DATA_FAIL)
+def train_model(
+    env: WaidBoot, 
+    station_id: str, 
+    station_name: str, 
+    periods: List[str], 
+    min_training_days: int
+) -> int:
+    """Executes model training pipeline including scaling, architecture setup, and registration.
 
-
-def train_model(env: WaidBoot, station_id: str, station_name: str, periods: list[str], min_training_days: int) -> int:
-    # 1. Fetch timestamps for alignment
-    query = "SELECT timestamp FROM stg_ecowitt ORDER BY timestamp ASC"
-    try:
-        with sqlite3.connect(env.waid_db) as conn:
-            db_timestamps = [row[0] for row in conn.execute(query).fetchall()]
-    except sqlite3.Error as e:
-        raise WError(f"Database access failed: {e}", code=WaidExit.DATA_FAIL)
-
-    if not db_timestamps:
-        raise WError("No timestamps found in 'stg_ecowitt'.", code=WaidExit.DATA_FAIL)
-
-    theoretical_all = calculate_theoretical_solar_radiation(
-        np.array(db_timestamps), env.ecowitt_latitude, env.ecowitt_longitude, env.tz_timezone
-    )
-    
-    # 2. Incremental Scaler Fitting
+    @param env Initialized framework environment context (WaidBoot).
+    @param station_id Target station identifier.
+    @param station_name Station descriptive name.
+    @param periods List of period dataset keys available for training.
+    @param min_training_days Guardrail training frequency limit.
+    @return Execution status code (WaidExit).
+    """
+    # 1. Incremental Scaler Fitting (Directly from 11-feature Tensors on disk)
     x_scaler, y_scaler = StandardScaler(), StandardScaler()
     total_samples = 0
     
     for p in periods:
         X = joblib.load(env.ml_tensors_dir / f'X_raw_{p}.pkl')
         y = joblib.load(env.ml_tensors_dir / f'Y_raw_{p}.pkl')
-        n_samples, n_timesteps, _ = X.shape
+        n_samples, n_timesteps, n_features = X.shape
         total_samples += n_samples
         
-        # Semantic Lookup (Replaces global_idx)
-        start_idx = get_start_index_for_period(p, db_timestamps)
-        
-        theo_solar_3d = np.zeros((n_samples, n_timesteps, 1))
-        for i in range(n_samples):
-            curr_idx = start_idx + i
-            if curr_idx + n_timesteps <= len(theoretical_all):
-                theo_solar_3d[i, :, 0] = theoretical_all[curr_idx : curr_idx + n_timesteps]
-            else:
-                theo_solar_3d[i, :, 0] = theoretical_all[-n_timesteps:]
-            
-        X_enriched = np.concatenate([X, theo_solar_3d], axis=2)
-        x_scaler.partial_fit(X_enriched.reshape(-1, env.n_input_features))
+        # X already contains all 11 aligned input features
+        x_scaler.partial_fit(X.reshape(-1, env.n_input_features))
         y_scaler.partial_fit(y.reshape(-1, env.n_output_features))
 
     # Save Scalers
     joblib.dump(x_scaler, env.ml_models_dir / env.ml_input_scaler_pkl_file)
     joblib.dump(y_scaler, env.ml_models_dir / env.ml_output_scaler_pkl_file)
 
-    # 3. Build Dataset Pipeline
+    # 2. Build Dataset Pipeline
     datasets = []
     for p in periods:
         X = joblib.load(env.ml_tensors_dir / f'X_raw_{p}.pkl')
         y = joblib.load(env.ml_tensors_dir / f'Y_raw_{p}.pkl')
         n_samples, n_timesteps, _ = X.shape
         
-        start_idx = get_start_index_for_period(p, db_timestamps)
-        theo_solar_3d = np.zeros((n_samples, n_timesteps, 1))
-        for i in range(n_samples):
-            curr_idx = start_idx + i
-            if curr_idx + n_timesteps <= len(theoretical_all):
-                theo_solar_3d[i, :, 0] = theoretical_all[curr_idx : curr_idx + n_timesteps]
-            else:
-                theo_solar_3d[i, :, 0] = theoretical_all[-n_timesteps:]
-        
-        X_enriched = np.concatenate([X, theo_solar_3d], axis=2)
-        X_scaled = x_scaler.transform(X_enriched.reshape(-1, env.n_input_features)).reshape(n_samples, n_timesteps, env.n_input_features)
+        # Direct transformation using consistent Scaler
+        X_scaled = x_scaler.transform(X.reshape(-1, env.n_input_features)).reshape(n_samples, n_timesteps, env.n_input_features)
         y_scaled = y_scaler.transform(y.reshape(-1, env.n_output_features)).reshape(n_samples, y.shape[1], env.n_output_features)
         
         datasets.append(tf.data.Dataset.from_tensor_slices((X_scaled, y_scaled)))
@@ -306,7 +308,7 @@ def train_model(env: WaidBoot, station_id: str, station_name: str, periods: list
     train_ds = full_ds.take(train_size).shuffle(buffer_size=10000).batch(32).prefetch(tf.data.AUTOTUNE)
     val_ds = full_ds.skip(train_size).take(val_size).batch(32).prefetch(tf.data.AUTOTUNE)
 
-    # 4. Neural Network Architecture Definition
+    # 3. Neural Network Architecture Definition
     TOTAL_OUTPUT_NODES = env.forecast_horizon_hours * env.n_output_features
 
     model = Sequential([
@@ -337,7 +339,7 @@ def train_model(env: WaidBoot, station_id: str, station_name: str, periods: list
     
     best_val_loss = min(history.history['val_loss'])
     
-    # Evaluate validation performance in physical units using batched datasets
+    # Evaluate validation performance in physical units
     val_preds_scaled = model.predict(val_ds)
     val_preds_denorm = denormalize_predictions(y_scaler, val_preds_scaled)
     
@@ -363,8 +365,12 @@ def train_model(env: WaidBoot, station_id: str, station_name: str, periods: list
     return WaidExit.SUCCESS
 
 
-def get_available_periods(env: WaidBoot) -> list[str]:
-    """Scans raw_tensors directory and returns a sorted list of period strings."""
+def get_available_periods(env: WaidBoot) -> List[str]:
+    """Scans raw_tensors directory and returns a sorted list of period strings.
+
+    @param env Initialized framework environment context (WaidBoot).
+    @return Sorted list of period strings detected in raw_tensors folder.
+    """
     files = glob.glob(str(env.ml_tensors_dir / 'X_raw_*.pkl'))
     periods = sorted([os.path.basename(f).replace('X_raw_', '').replace('.pkl', '') for f in files])
 
@@ -376,6 +382,10 @@ def get_available_periods(env: WaidBoot) -> list[str]:
 
 
 def main() -> int:
+    """Main entry point for ML model training and feature store synchronization.
+
+    @return Process exit status code matching WaidExit enum.
+    """
     try:
         env = WaidBoot()
 

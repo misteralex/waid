@@ -2,7 +2,7 @@
 
 """
 @file waid_orchestrate.py
-@brief Standalone Prefect-based Orchestrator for WAID Pipeline.
+@brief Standalone Prefect-based Orchestrator for Weather AI Direct (WAID) Pipeline.
 @details Coordinates data ingestion, dbt transformations, machine learning, 
          inference, and visualization workflows using Prefect flows and tasks.
 @author AF
@@ -55,6 +55,7 @@ def run_python_step(
 ) -> int:
     """
     @brief Executes an external Python script step as a Prefect task.
+
     @param script_name Name of the Python script file to execute.
     @param env_config Environment configuration object (WaidBoot).
     @param extra_args Optional command line arguments to pass to the script.
@@ -63,8 +64,8 @@ def run_python_step(
     ctx = TaskRunContext.get()
     if ctx:
         ctx.task_run.name = script_name
-    logger = get_run_logger()
-    logger.info(f"🔶 Step: {script_name}")
+    exec_logger = get_run_logger()
+    exec_logger.info(f"🔶 Step: {script_name}")
 
     if env_config and hasattr(env_config, "tools_dir") and env_config.tools_dir:
         working_dir = Path(env_config.tools_dir)
@@ -89,14 +90,14 @@ def run_python_step(
         env_vars = os.environ.copy()
         env_vars.update(env_config.env_dict)
 
-    logger.info(f"Executing Python script in {working_dir}: {' '.join(cmd)}")
+    exec_logger.info(f"Executing Python script in {working_dir}: {' '.join(cmd)}")
 
     result = subprocess.run(
         cmd, cwd=working_dir, env=env_vars, check=False, text=True
     )
 
     if result.returncode != 0:
-        logger.error(
+        exec_logger.error(
             f"The script {script_name} terminated with error exit code: {result.returncode}"
         )
 
@@ -113,6 +114,7 @@ def run_dbt_step(
 ) -> int:
     """
     @brief Executes a dbt CLI command as a Prefect task.
+
     @param command dbt command to run (e.g., run, test, deps, compile).
     @param select Model selector string for dbt execution.
     @param env_config Environment configuration object (WaidBoot).
@@ -120,8 +122,8 @@ def run_dbt_step(
     @return Subprocess return code integer (0 on success).
     """
     select_str = select if select else ""
-    logger = get_run_logger()
-    logger.info(f"🔶 Step: dbt {command} {select_str}".strip())
+    exec_logger = get_run_logger()
+    exec_logger.info(f"🔶 Step: dbt {command} {select_str}".strip())
 
     cmd = [
         str(env_config.dbt_bin),
@@ -151,11 +153,31 @@ def run_dbt_step(
     )
 
     if result.returncode != 0:
-        logger.error(
+        exec_logger.error(
             f"The dbt command {command} {select_str} terminated with error status: {result.returncode}"
         )
 
     return result.returncode
+
+
+@task(name="dbt Conditional Setup")
+def ensure_dbt_setup(env: WaidBoot) -> int:
+    """
+    @brief Validates and executes minimal dbt setup tasks (deps, compile) if missing.
+    @details Ensures downstream tasks have compiled manifest artifacts even if ingestion is skipped.
+
+    @param env WaidBoot configuration instance.
+    @return Exit status code integer (0 if setup is valid or successful).
+    """
+    target_manifest = Path(env.dbt_dir) / "target" / "manifest.json"
+    if not target_manifest.exists():
+        exec_logger = get_run_logger()
+        exec_logger.info("dbt manifest target missing. Running minimum dbt environment initialization...")
+        exit_code = run_dbt_step("deps", "", env)
+        if exit_code == 0:
+            exit_code = run_dbt_step("compile", "", env)
+        return exit_code
+    return 0
 
 
 # ==============================================================================
@@ -170,6 +192,7 @@ def data_ingestion_flow(
 ) -> int:
     """
     @brief Encapsulates raw data ingestion, sync, and profiling steps.
+
     @param env WaidBoot configuration instance.
     @param period_args List containing period arguments for downstream scripts.
     @return Exit status code integer (0 if successful).
@@ -202,6 +225,7 @@ def data_preparation_flow(
 ) -> int:
     """
     @brief Encapsulates dbt compilation, model staging, dataset matching, and feature specs setup.
+
     @param env WaidBoot configuration instance.
     @param period_args List containing period arguments for downstream scripts.
     @return Exit status code integer (0 if successful).
@@ -258,60 +282,28 @@ def ml_and_inference_flow(
 ) -> int:
     """
     @brief Encapsulates model training, inference execution, and quality check workflows.
-    @details Inspects the public_forecasts table using get_last_inference_datetime to check 
-             if predictions are fresh (< 6 hours). Skips ML execution if recent predictions exist.
+    @details Always executes tensor generation, model training, and full ML inference.
+
     @param env WaidBoot configuration instance.
     @param period_args List containing period arguments for scripts.
-    @param force_retrain Flag to force ML training even if recent valid inference exists.
+    @param force_retrain Retained for signature compatibility.
     @return Sub-flow execution exit code integer (0 if successful).
     """
-    logger = get_run_logger()
+    flow_logger = get_run_logger()
 
-    # Determine database path based on configuration / environment
-    db_path = Path(env.waid_db)
-    
-    # Retrieve last forecast timestamp from public_forecasts table (aligned with waid_orchestrate_lab)
-    last_ml_dt = (
-        get_last_inference_datetime(db_path, table_name="public_forecasts")
-        if db_path.exists()
-        else None
+    # Always execute ML Tensors and Model Training to guarantee data freshness and accuracy
+    flow_logger.info("Executing ML Tensors and Model Training (05_1, 05_2, 05_3)...")
+    exit_code = run_python_step(
+        "waid_05_1_ml_tensors.py", env, extra_args=period_args
     )
+    if exit_code == 0:
+        exit_code = run_python_step("waid_05_2_ml_train.py", env)
+    if exit_code == 0:
+        exit_code = run_python_step("waid_05_3_ml_sanity_check.py", env)
 
-    should_skip_training = False
-
-    if last_ml_dt and not force_retrain:
-        current_dt = datetime.now()
-
-        # Normalize timezone details for uniform naive comparison
-        if last_ml_dt.tzinfo is not None:
-            last_ml_dt = last_ml_dt.replace(tzinfo=None)
-
-        hours_diff = (current_dt - last_ml_dt).total_seconds() / 3600.0
-        logger.info(
-            f"Last ML prediction timestamp: {last_ml_dt} (Elapsed: {hours_diff:.2f}h)"
-        )
-
-        if hours_diff < 6.0:
-            should_skip_training = True
-
-    if should_skip_training:
-        logger.info(
-            f"ℹ️ Last valid ML forecast is still fresh (< 6h). Skipping ML Training (05_1 & 05_2)."
-        )
-        exit_code = 0
-    else:
-        logger.info("🚀 Executing ML Tensors and Model Training (05_1 & 05_2)...")
-        exit_code = run_python_step(
-            "waid_05_1_ml_tensors.py", env, extra_args=period_args
-        )
-        if exit_code == 0:
-            exit_code = run_python_step("waid_05_2_ml_train.py", env)
-
-    # Invoke Inference Forecast: Pass --skip-ml if training was bypassed
+    # Invoke Inference Forecast with full model execution
     if exit_code == 0:
         inf_args = list(period_args) if period_args else []
-        if should_skip_training:
-            inf_args.append("--skip-ml")
         exit_code = run_python_step(
             "waid_06_1_inference_forecast.py", env, extra_args=inf_args
         )
@@ -338,6 +330,7 @@ def ml_and_inference_flow(
 def viz_and_docs_flow(env: WaidBoot) -> int:
     """
     @brief Encapsulates Streamlit deployment and dbt documentation export.
+
     @param env WaidBoot configuration instance.
     @return Exit status code integer (0 if successful).
     """
@@ -365,6 +358,7 @@ def waid_main_flow(
 ) -> int:
     """
     @brief Main entry point flow orchestrating the complete WAID processing pipeline.
+
     @param period Target month string in YYYY-MM format.
     @param skip_ingestion Flag to bypass ingestion and preparation sub-flows.
     @param force_retrain Flag to force ML training step even if recent inference exists.
@@ -465,6 +459,8 @@ def waid_main_flow(
             logger.warning(
                 "🔶 Skipping data ingestion and preparation flow (--skip-ingestion flag active)"
             )
+            # Ensure dbt target manifest is present when skipping ingestion
+            exit_code = ensure_dbt_setup(env)
 
         if exit_code == 0:
             exit_code = ml_and_inference_flow(

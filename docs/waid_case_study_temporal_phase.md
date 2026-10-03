@@ -1,7 +1,7 @@
 # WAID Case Study: Resolving Temporal Phase Errors and Aligning Multi-Feature Tensors in WAID (Weather AI Deterministic-nowcasting)
 
 ## 1. Executive Summary & Context
-In deterministic meteorological nowcasting systems, precise temporal alignment between local sensor telemetry and model inference is paramount. During the operational deployment of **WAID (Weather AI Deterministic-nowcasting)** using local Ecowitt station telemetry in Western Europe (`Europe/Paris`, UTC+2 during summer daylight saving), a classic **temporal phase error** manifested itself during sudden precipitation events. 
+In deterministic meteorological nowcasting systems, precise temporal alignment between local sensor telemetry and model inference is paramount. During the operational deployment of **WAID (Weather AI Deterministic-nowcasting)** using local Ecowitt station telemetry in Western Europe (i.e.`Europe/Rome`, UTC+2 during summer daylight saving), a classic **temporal phase error** manifested itself during sudden precipitation events. 
 
 While the model accurately captured the intensity and overall shape of a sudden morning storm on August 25, 2026, the forecasted peak appeared shifted by 3 hours compared to actual rain gauge recordings. This case study details the root cause analysis—uncovering a naive timestamp injection bug—and illustrates how WAID's dual-layer defense (UTC normalization + Physics-Safe Guardrails) successfully manages physical coherence.
 

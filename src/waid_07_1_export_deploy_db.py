@@ -29,8 +29,8 @@ from boot import (
 )
 
 def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
-    """
-    @brief Exports the prepared DataFrame directly to Supabase PostgreSQL database using UPSERT.
+    """Exports the prepared DataFrame directly to Supabase PostgreSQL database using UPSERT.
+
     @param env WaidBoot configuration object.
     @param df Pandas DataFrame containing the public forecasts dataset.
     @return None
@@ -138,10 +138,10 @@ def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
 
 
 def main() -> int:
-    """
-    @brief Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE.
-           Optionally synchronizes data with Supabase if WAID_DEPLOY_MODE is set to 'cloud'.
-    @return int Exit code representing success or failure status.
+    """Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE.
+    Optionally synchronizes data with Supabase if WAID_DEPLOY_MODE is set to 'cloud'.
+
+    @return Integer status code matching WaidExit enum (WaidExit.SUCCESS or WaidExit.DATA_FAIL/CONFIG_FAIL).
     """
     try:
         parser = argparse.ArgumentParser(description="WAID Inference Engine & DB Exporter")
@@ -161,7 +161,7 @@ def main() -> int:
 
         # Resolve public db path with strict check
         if hasattr(env, 'deploy_db_file') and env.waid_data_dir:
-            waid_db_deploy_path = Path(env.waid_data_dir / env.deploy_db_file)
+            waid_db_deploy_path = Path(env.deploy_db_file)
         else:
             raise WError("Required configuration is missing or does not match the expected contents.", code=WaidExit.CONFIG_FAIL)
         
@@ -245,7 +245,28 @@ def main() -> int:
         logger.warning("No records found in the lab database to export.")
         return WaidExit.DATA_FAILED if 'DATA_FAILED' in dir(WaidExit) else WaidExit.DATA_FAIL
 
-    logger.info(f"Extracted {len(df)} records. Preparing public database export...")
+    initial_count = len(df)
+
+    # -------------------------------------------------------------------------
+    # INTELLIGENT DEDUPLICATION: Prioritize records with maximum non-NULL values
+    # -------------------------------------------------------------------------
+    # Calculate non-null values count for each record
+    df['_non_null_count'] = df.notnull().sum(axis=1)
+
+    # Sort by primary composite key and non-null completeness count
+    sort_cols = ['timestamp', 'model_version', '_non_null_count']
+    if 'created_at' in df.columns:
+        sort_cols.append('created_at')
+
+    df = df.sort_values(by=sort_cols, ascending=True)
+
+    # Retain the last record (guaranteed to contain maximum non-null features)
+    df = df.drop_duplicates(subset=['timestamp', 'model_version'], keep='last')
+    
+    # Drop auxiliary calculation column
+    df = df.drop(columns=['_non_null_count'])
+
+    logger.info(f"Extracted {initial_count} records. Deduplicated to {len(df)} rich records.")
 
     # Step 1: Update local deployment SQLite database
     waid_db_deploy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,6 +290,9 @@ def main() -> int:
                 );
             """)
             
+            # Purge existing records to prevent lingering legacy data
+            cursor.execute("DELETE FROM public_forecasts;")
+            
             # Sanitize NaNs to None for SQLite NULL handling
             cols = list(df.columns)
             placeholders = ", ".join(["?"] * len(cols))
@@ -281,7 +305,7 @@ def main() -> int:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_public_forecasts_ts_model ON public_forecasts (timestamp, model_version)")
             dest_conn.commit()
 
-        logger.success(f"Local public database successfully updated (UPSERT) at: {waid_db_deploy_path}")
+        logger.success(f"Local public database successfully updated (Deduplicated & Cleaned) at: {waid_db_deploy_path}")
         
     except Exception as e:
         logger.error(f"Failed to write to local public database: {e}")

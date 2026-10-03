@@ -20,60 +20,71 @@ import pandas as pd
 
 def calculate_theoretical_solar_radiation(
     timestamps: np.ndarray,
+    humidity: np.ndarray = None,
+    input_tz: str = "UTC",
     lat: float = None,
     lon: float = None,
-    local_tz: str = "UTC",
+    env: WaidBoot = None,
 ) -> np.ndarray:
     """
-    @brief Computes theoretical clear-sky solar radiation based on UTC time of day,
-            day of the year, and geographical coordinates to prevent daylight saving time shifts.
+    @brief Computes atmospheric-attenuated theoretical solar radiation 
+           integrating relative humidity (RH) and dynamic power scaling 
+           retrieved from the SQLite model registry.
 
-    @param timestamps Array of timestamps (strings or datetime objects).
-    @param lat Latitude of the weather station in decimal degrees.
-    @param lon Longitude of the weather station in decimal degrees.
-    @param local_tz Timezone of the incoming timestamps if naive (default "UTC").
-    @return Array of theoretical solar radiation values in W/m^2.
+    @param timestamps Array of datetime objects or timestamps.
+    @param humidity Optional array of relative humidity percentage values.
+    @param input_tz Timezone string for naive timestamps (default "UTC").
+    @param lat Station latitude coordinate in decimal degrees.
+    @param lon Station longitude coordinate in decimal degrees.
+    @param env Optional WaidBoot instance for database configuration.
+    @return Array of theoretical solar radiation values (W/m²).
     """
-    solar_rad = []
+    if lat is None or lon is None:
+        raise ValueError("Latitude (lat) and Longitude (lon) must be provided.")
+
     dt_index = pd.to_datetime(timestamps)
 
-    # Localize naive timestamps assuming they represent local_tz (or UTC by default)
     if dt_index.tz is None:
-        dt_index = dt_index.tz_localize(local_tz, nonexistent="shift_forward").tz_convert("UTC")
-    else:
+        dt_index = dt_index.tz_localize(input_tz, nonexistent="shift_forward")
+
+    if str(dt_index.tz) != "UTC":
         dt_index = dt_index.tz_convert("UTC")
 
-    # Equation of Time Correction to adjust for true solar longitude.
-    for dt in dt_index:
-        day_of_year = dt.dayofyear
-        
-        # "Equation of Time Correction (EoT in minutes)
-        b = np.radians(360.0 * (day_of_year - 81) / 364.0)
-        eot = 9.87 * np.sin(2 * b) - 7.53 * np.cos(b) - 1.5 * np.sin(b)
+    day_of_year = dt_index.dayofyear.values
+    dt_utc_hours = (
+        dt_index.hour.values 
+        + dt_index.minute.values / 60.0 
+        + dt_index.second.values / 3600.0
+    )
 
-        # True Solar Time in UTC (Solar Time)
-        dt_utc_hours = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
-        solar_time = dt_utc_hours + (lon / 15.0) + (eot / 60.0)
+    b = np.radians(360.0 * (day_of_year - 81) / 365.0)
+    eot = 9.87 * np.sin(2 * b) - 7.53 * np.cos(b) - 1.5 * np.sin(b)
 
-        # Hour angle (-180° at 00:00 solar time, 0° at solar noon, +180° at 24:00)
-        hour_angle = (solar_time - 12.0) * 15.0
+    solar_time = dt_utc_hours + (lon / 15.0) + (eot / 60.0)
+    hour_angle = (solar_time - 12.0) * 15.0
+    declination = 23.45 * np.sin(np.radians(360.0 * (284 + day_of_year) / 365.0))
 
-        declination = 23.45 * np.sin(np.radians(360.0 * (284 + day_of_year) / 365.0))
+    lat_rad = np.radians(lat)
+    dec_rad = np.radians(declination)
+    ha_rad = np.radians(hour_angle)
 
-        lat_rad = np.radians(lat)
-        dec_rad = np.radians(declination)
-        ha_rad = np.radians(hour_angle)
+    sin_elevation = np.sin(lat_rad) * np.sin(dec_rad) + np.cos(lat_rad) * np.cos(dec_rad) * np.cos(ha_rad)
+    elevation_angle = np.arcsin(np.clip(sin_elevation, -1.0, 1.0))
 
-        sin_elevation = np.sin(lat_rad) * np.sin(dec_rad) + np.cos(lat_rad) * np.cos(dec_rad) * np.cos(ha_rad)
-        elevation_angle = np.arcsin(np.clip(sin_elevation, -1.0, 1.0))
+    base_solar = 1000.0 * np.maximum(0.0, np.sin(elevation_angle))
 
-        if elevation_angle > 0:
-            max_solar = 1000.0 * np.sin(elevation_angle)
-            solar_rad.append(max(0.0, max_solar))
-        else:
-            solar_rad.append(0.0)
+    # Apply humidity-based atmospheric extinction if humidity array is provided
+    if humidity is not None:
+        rh_arr = np.asarray(humidity, dtype=float)
+        rh_fraction = np.clip(rh_arr / 100.0, 0.0, 1.0)
+        attenuation_factor = np.exp(-0.35 * rh_fraction)
+        solar_rad = base_solar * attenuation_factor
+    else:
+        solar_rad = base_solar
 
-    return np.array(solar_rad, dtype=float)
+    cleaned_solar = np.maximum(0.0, solar_rad)
+    
+    return cleaned_solar
 
 
 def fetch_and_resample_ecowitt(
@@ -140,6 +151,10 @@ def fetch_and_resample_ecowitt(
                 df_eco_raw[field], errors="coerce"
             )
 
+    # Apply passive solar radiation thermal offset (-1.5 °C correction)
+    if "outdoor_temperature_c" in df_eco_raw.columns:
+        df_eco_raw["outdoor_temperature_c"] = df_eco_raw["outdoor_temperature_c"] - 1.5
+
     resample_freq = f"{env.resample_interval_min} min"
     logger.info(
         f"Resampling local telemetry into {resample_freq} synchronized slots..."
@@ -183,6 +198,24 @@ def fetch_and_resample_ecowitt(
                 df_eco_hourly[col] = apply_physics_guardrails(
                     df_eco_hourly[col], feature=feat
                 )
+    else:
+        logger.warning(
+            "Time interpolation is disabled (max_interpolate_hours = 0). Raw NaN values will persist."
+        )
+
+    # Check for unhandled NaNs in resampled telemetry regardless of interpolation configuration
+    nan_summary = df_eco_hourly.isna().sum()
+    problematic_cols = nan_summary[nan_summary > 0]
+
+    if not problematic_cols.empty:
+        details = ", ".join(
+            f"{col}: {count} missing"
+            for col, count in problematic_cols.items()
+        )
+        logger.warning(
+            f"Unresolved NaNs detected in resampled telemetry"
+        )
+        logger.debug(f"Missing telemetry details -> [{details}]")
 
     return df_eco_hourly.reset_index()
 
@@ -273,22 +306,22 @@ def apply_physics_guardrails(
 ) -> np.ndarray:
     """
     @brief Unified engine for physics-based guardrails, hardware resolution quantization,
-        and noise suppression.
-    @details This function handles individual scalar values, Pandas Series, or
-            full multi-dimensional prediction tensors, applying rules based on
-            feature type and sensor specifications.
-    @param data Input data, can be a scalar, Pandas Series, or a numpy array (1D or 3D for batch).
-    @param feature Optional; specifies the feature name (e.g., "temp", "rh", "solar") for single-feature mode.
-    @param sensor_specs Optional; a dictionary of sensor specifications (resolution, deadband). If None, uses default specs.
-    @param env Optional; WaidBoot configuration instance, used for theoretical solar radiation calculation in batch mode.
-    @param future_timestamps Optional; list of future timestamps, used for theoretical solar radiation calculation in batch mode.
-    @return Processed data after applying guardrails, quantization, and noise suppression. Returns a scalar, 1D array, or 3D array depending on input 'data'.
+           and noise suppression.
+    @details Handles individual scalar values, Pandas Series, or multi-dimensional prediction tensors,
+             applying rules based on feature type and hardware specifications.
+
+    @param data Input data (scalar, Pandas Series, or numpy array).
+    @param feature Optional feature name ("temp", "rh", "solar", "wind", "rain", "pres").
+    @param sensor_specs Dictionary containing sensor resolution and deadband bounds.
+    @param env WaidBoot environment instance for astronomical solar checks.
+    @param future_timestamps List of target future timestamps for clear-sky boundaries.
+    @return Processed numpy array, Pandas Series, or scalar value.
     """
     # 1. Load default specs if not provided
     if sensor_specs is None:
         sensor_specs = {
             "ecowitt_temp": {"resolution": 0.1, "deadband": 0.0},
-            "ecowitt_rh": {"resolution": 1.0, "deadband": 0.0},
+            "ecowitt_rh": {"resolution": 0.1, "deadband": 0.0},  # Set to 0.1 to preserve dynamics
             "ecowitt_pres": {"resolution": 0.1, "deadband": 0.0},
             "ecowitt_wind": {"resolution": 0.1, "deadband": 0.2},
             "ecowitt_solar": {"resolution": 1.0, "deadband": 0.0},
@@ -302,19 +335,19 @@ def apply_physics_guardrails(
         )
         res = spec["resolution"]
 
-        # Ensure we work with arrays internally, preserving scalar input flags
         is_scalar = np.isscalar(data)
         val = np.asarray(data, dtype=float)
 
-        # Apply non-negativity constraint (for all except temperature)
-        if feature != "temp":
+        # Non-negativity constraint for strictly positive physical variables
+        if feature in ["wind", "solar", "rain", "rh"]:
             val = np.maximum(0.0, val)
 
-        # Use resolution directly as sensitivity threshold instead of aggressive deadband
-        threshold = res / 2.0
-        val = np.where(val < threshold, 0.0, val)
+        # Zero-threshold suppression for rain, wind, and solar
+        if feature in ["wind", "solar", "rain"]:
+            threshold = res / 2.0
+            val = np.where(val < threshold, 0.0, val)
 
-        # Apply quantization based on sensor resolution
+        # Quantization to sensor resolution
         quantized = np.round(val / res) * res
         return quantized.item() if is_scalar else quantized
 
@@ -323,7 +356,7 @@ def apply_physics_guardrails(
     is_batch = data_arr.ndim == 3
     preds = data_arr[0].copy() if is_batch else data_arr.copy()
 
-    # Pre-calculate theoretical clear-sky solar boundaries (if env and timestamps provided)
+    # Pre-calculate theoretical clear-sky solar boundaries
     theo_solar_future = None
     if env is not None and future_timestamps is not None:
         ts_index = pd.to_datetime(future_timestamps)
@@ -334,36 +367,43 @@ def apply_physics_guardrails(
 
         theo_solar_future = calculate_theoretical_solar_radiation(
             ts_index.values,
-            env.ecowitt_latitude,
-            env.ecowitt_longitude,
-            env.tz_timezone,
+            input_tz="UTC",
+            lat=env.ecowitt_latitude,
+            lon=env.ecowitt_longitude,
         )
 
     features = ["temp", "rh", "pres", "wind", "solar", "rain"]
 
-    # Vectorized computation along columns (features) instead of nested loops
     for j, feat in enumerate(features):
         spec = sensor_specs.get(
             f"ecowitt_{feat}", {"resolution": 0.1, "deadband": 0.0}
         )
         res = spec["resolution"]
-        threshold = res / 2.0
 
         col = preds[:, j]
 
-        # Non-negativity
-        if feat != "temp":
+        # A) Absolute Physical Bounds Clipping
+        if feat in ["wind", "solar", "rain"]:
             col = np.maximum(0.0, col)
+        elif feat == "rh":
+            col = np.clip(col, 0.0, 100.0)
 
-        # Apply Solar Clear-Sky boundary & Hard Night Clipping
+        # B) Clear-Sky Solar Boundary & Night Clipping
         if feat == "solar" and theo_solar_future is not None:
             col = np.where(
                 theo_solar_future <= 0.0, 0.0, np.minimum(col, theo_solar_future)
             )
 
-        # Noise suppression & quantization
-        col = np.where(col < threshold, 0.0, col)
-        preds[:, j] = np.round(col / res) * res
+        # C) Noise Suppression selective zero-clipping
+        if feat in ["wind", "rain", "solar"]:
+            threshold = res / 2.0
+            col = np.where(col < threshold, 0.0, col)
+
+        # D) Precision Quantization
+        if feat in ["temp", "rh", "pres"]:
+            preds[:, j] = np.round(col, decimals=1)
+        else:
+            preds[:, j] = np.round(col / res) * res
 
     return np.expand_dims(preds, axis=0) if is_batch else preds
 
@@ -407,12 +447,10 @@ def get_last_inference_datetime(
 
     try:
         with sqlite3.connect(db_path) as conn:
-            # Query prioritizing created_at over timestamp
             query = f"SELECT MAX(created_at) AS last_ts FROM {table_name}"
             try:
                 df_res = pd.read_sql_query(query, conn)
             except Exception:
-                # Fallback to timestamp if created_at column is missing
                 query = f"SELECT MAX(timestamp) AS last_ts FROM {table_name}"
                 df_res = pd.read_sql_query(query, conn)
 

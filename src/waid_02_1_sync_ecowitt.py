@@ -100,32 +100,85 @@ def ensure_table_exists(env: WaidBoot) -> dict:
 
 
 def process_timestamps_to_utc(df: pd.DataFrame, local_tz: str) -> pd.DataFrame:
-    """Converts local datetime strings into standardized UTC timestamps and Epoch values.
+    """Derives UTC timestamps from the station's Unix epoch (source of truth).
 
-    @param df Input Pandas DataFrame containing the 'timestamp' column.
-    @param local_tz Target local timezone string (e.g., 'Europe/Rome').
-    @return Cleaned DataFrame with UTC timestamps.
+    @param df Input DataFrame containing raw station timestamps and epoch column.
+    @param local_tz String representation of the local station timezone (e.g., 'Europe/Paris').
+    @return Processed DataFrame with standardized UTC 'timestamp' strings and integer 'epoch_timestamp'.
     """
-    logger.info(f"Converting raw timestamps from local timezone ('{local_tz}') to UTC...")
+    epoch = df["epoch_timestamp"].astype("int64")
 
-    # Convert to datetime series
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-    # Localize naive local time to target TimeZone handling ambiguity
-    df["timestamp"] = df["timestamp"].dt.tz_localize(
-        local_tz, ambiguous="NaT", nonexistent="shift_forward"
+    # Sanity check: the CSV local label must agree with the epoch
+    label = pd.to_datetime(df["timestamp"])
+    true_local = (
+        pd.to_datetime(epoch, unit="s", utc=True)
+        .dt.tz_convert(local_tz).dt.tz_localize(None).dt.floor("min")
     )
+    bad = int((label != true_local).sum())
+    if bad:
+        logger.warning(f"{bad} rows have a local label that disagrees with the epoch")
 
-    # Drop rows with invalid dates if any
-    df.dropna(subset=["timestamp"], inplace=True)
-
-    # Compute Unix Epoch (seconds since 1970-01-01 00:00:00 UTC)
-    df["epoch_timestamp"] = (df["timestamp"].astype("int64") // 10**9).astype(int)
-
-    # Convert to UTC string representation (YYYY-MM-DD HH:MM:SS)
-    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.strftime("%Y-%m-%d %H:%M:%S")
-
+    df["timestamp"] = pd.to_datetime(epoch, unit="s", utc=True).dt.strftime("%Y-%m-%d %H:%M:00")
+    df["epoch_timestamp"] = epoch
     return df
+
+
+def report_gaps(
+    df: pd.DataFrame,
+    min_gap_min: int = 2,
+    max_missing_ratio: float = 0.02,
+    max_gap_min: int = 180,
+) -> pd.DataFrame:
+    """Detects gaps in the 1-minute Ecowitt telemetry (UTC 'timestamp' column).
+ 
+    Read-only: logs the gaps and returns them, it does NOT fill anything.
+ 
+    @param df DataFrame after process_timestamps_to_utc().
+    @param min_gap_min Minimum number of consecutive missing minutes to log.
+    @param max_missing_ratio Warn if missing/expected exceeds this ratio.
+    @param max_gap_min Warn if the longest gap exceeds this many minutes.
+    @return DataFrame with columns start, end, missing_min.
+    """
+    s = (
+        pd.Series(pd.to_datetime(df["timestamp"], utc=True))
+        .drop_duplicates()
+        .sort_values()
+        .reset_index(drop=True)
+    )
+    if len(s) < 2:
+        return pd.DataFrame(columns=["start", "end", "missing_min"])
+ 
+    step = pd.Timedelta(minutes=1)
+    delta_min = s.diff().dt.total_seconds() / 60
+    mask = delta_min > 1.5  # tolerate small jitter
+ 
+    gaps = pd.DataFrame(
+        {
+            "start": s.shift(1)[mask] + step,
+            "end": s[mask] - step,
+            "missing_min": (delta_min[mask] - 1).round().astype(int),
+        }
+    ).reset_index(drop=True)
+ 
+    expected = int((s.iloc[-1] - s.iloc[0]) / step) + 1
+    missing = int(gaps["missing_min"].sum())
+    ratio = missing / expected if expected else 0.0
+ 
+    for g in gaps[gaps["missing_min"] >= min_gap_min].itertuples():
+        logger.warning(
+            f"Gap of {g.missing_min} min: {g.start:%Y-%m-%d %H:%M} UTC -> {g.end:%Y-%m-%d %H:%M} UTC"
+        )
+ 
+    longest = int(gaps["missing_min"].max()) if len(gaps) else 0
+    logger.info(
+        f"Gap summary: {missing}/{expected} minutes missing ({ratio:.2%}), "
+        f"{len(gaps)} gaps, longest {longest} min"
+    )
+    if ratio > max_missing_ratio or longest > max_gap_min:
+        logger.warning(
+            f"Data quality threshold exceeded (ratio>{max_missing_ratio:.0%} or gap>{max_gap_min} min)"
+        )
+    return gaps
 
 
 def sync_ecowitt_with_db(
@@ -138,6 +191,7 @@ def sync_ecowitt_with_db(
     @param env Boot environment instance.
     @param args Validated CLI arguments.
     @param fields Mapping of original columns to database schema names.
+    @return None
     """
     period: datetime = args.period
     data_dir: Path = env.ecowitt_dir
@@ -164,8 +218,9 @@ def sync_ecowitt_with_db(
     df = pd.read_csv(data_file)
     df.rename(columns=fields, inplace=True)
 
-    # Standardize Timestamps to UTC
+    # Standardize Timestamps to UTC and check gaps
     df = process_timestamps_to_utc(df, env.tz_timezone)
+    report_gaps(df)
 
     total_added = 0
     sql_query = ""

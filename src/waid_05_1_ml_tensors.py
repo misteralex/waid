@@ -11,12 +11,13 @@
            from SQLite staging.
          - Input Features (X): 3D sliding window (lookback x features) across 6 key 
            meteorological variables combined with cyclical temporal embeddings 
-           (hour_sin, hour_cos, doy_sin, doy_cos). Total 10 features per timestep.
+           (hour_sin, hour_cos, doy_sin, doy_cos) and theoretical solar radiation. 
+           Total 11 features per timestep.
          - Target Matrix (Y): 3D local feature delta dynamics for the subsequent 
            forecast horizon relative to current time t:
            Y_h = Feature(t + h) - Feature(t), for h in [1..horizon]
 
-@author WAID Core Team
+@author AF
 @date 2026
 """
 
@@ -25,7 +26,7 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 import sys
 import argparse
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Tuple, List
 
@@ -45,40 +46,37 @@ from boot import (
     validate_period,
 )
 
-# Logger setup initialized by framework environment
-logger = logging.getLogger(__name__)
+# Import shared utilities from Single Source of Truth
+from waid_shared import calculate_theoretical_solar_radiation
 
 # ==============================================================================
 # CORE DATA PROCESSING FUNCTIONS
 # ==============================================================================
 
 def load_ecowitt_telemetry(env: WaidBoot, period: pd.Timestamp) -> pd.DataFrame:
-    """
-    Extracts and cleans hourly Ecowitt sensor telemetry from SQLite for a given period.
-    Extends the start query boundary by lookback_hours (t - lookback) to avoid 
-    dropping tensors for the first day of the target month.
+    """Extracts, cleans, and enforces hourly temporal continuity for Ecowitt sensor telemetry.
 
-    Args:
-        env (WaidBoot): Initialized framework environment context.
-        period (pd.Timestamp): Target month in YYYY-MM format.
+    Extends start boundary by lookback_hours and end boundary by forecast_horizon_hours
+    to preserve complete monthly coverage for 3D tensor generation.
 
-    Returns:
-        pd.DataFrame: Cleaned DataFrame containing all target features and timestamps.
-
-    Raises:
-        WError: If table access fails or no valid records are found.
+    @param env Initialized framework environment context (WaidBoot).
+    @param period Target month as pd.Timestamp (YYYY-MM).
+    @return Cleaned, hourly-reindexed DataFrame containing target features.
     """
     if not os.path.exists(env.waid_db):
         raise WError(f"Database file not found at: {env.waid_db}", code=WaidExit.INPUT_FAIL)
 
     conn = sqlite3.connect(env.waid_db)
     
-    # Define start boundary with lookback buffer to preserve full first-day samples
     month_start = pd.Timestamp(period.strftime("%Y-%m-01 00:00:00"))
+    month_end = period + pd.offsets.MonthEnd(1)
+    
+    # Extended boundaries for lookback and forecast windows
     extended_start = month_start - pd.Timedelta(hours=env.lookback_hours)
+    extended_end = month_end + pd.Timedelta(hours=env.forecast_horizon_hours)
     
     start_date = extended_start.strftime("%Y-%m-%d %H:%M:%S")
-    end_date = (period + pd.offsets.MonthEnd(1)).strftime("%Y-%m-%d 23:59:59")
+    end_date = extended_end.strftime("%Y-%m-%d %H:%M:%S")
 
     standard_features = [feature["standard"] for feature in env.output_features]
     cols_sql = ", ".join(["timestamp"] + standard_features)
@@ -95,28 +93,74 @@ def load_ecowitt_telemetry(env: WaidBoot, period: pd.Timestamp) -> pd.DataFrame:
         conn.close()
 
     if df.empty:
-        raise WError(f"No records found in 'stg_ecowitt' for period {start_date} to {end_date}", code=WaidExit.INPUT_FAIL)
+        raise WError(
+            f"No records found in 'stg_ecowitt' for period {start_date} to {end_date}", 
+            code=WaidExit.INPUT_FAIL
+        )
 
-    # Enforce datetime type and eliminate chronological duplicates
+    # Standardize datetime objects and eliminate chronological duplicates
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values('timestamp').drop_duplicates(subset=['timestamp']).reset_index(drop=True)
 
-    logger.info(f"Loaded {len(df)} validated observations (including lookback buffer) for period {period.strftime('%Y-%m')}.")
+    # Construct strict hourly grid based on start and end timestamps
+    full_range = pd.date_range(start=df['timestamp'].min(), end=df['timestamp'].max(), freq='1h')
+    missing_timestamps = full_range.difference(df['timestamp'])
+
+    # Handle temporal gaps if detected
+    if not missing_timestamps.empty:
+        logger.warning(
+            f"Detected {len(missing_timestamps)} missing hourly records in telemetry timeline. "
+            "Reindexing to strict 1h grid and applying linear interpolation."
+        )
+        logger.debug(f"Missing timestamps: {missing_timestamps.strftime('%Y-%m-%d %H:%M').tolist()}")
+        
+        # Reindex dataframe to complete hourly range
+        df = df.set_index('timestamp').reindex(full_range)
+        df.index.name = 'timestamp'
+        
+        # Interpolate feature values linearly
+        df[standard_features] = df[standard_features].interpolate(method='linear')
+        
+        # Check for unhandled NaNs in standard features prior to boundary fill
+        nan_cols = df[standard_features].isna().sum()
+        missing_features = nan_cols[nan_cols > 0]
+
+        if not missing_features.empty:
+            details = ", ".join(
+                f"{feat}: {count} missing"
+                for feat, count in missing_features.items()
+            )
+            logger.warning(
+                f"NaN values detected in telemetry boundary features. "
+                "Applying forward and backward fill (ffill/bfill) to preserve timeline integrity."
+            )
+            logger.debug(f"Missing feature details -> [{details}]")
+            
+            df[standard_features] = df[standard_features].ffill().bfill()
+        
+        df = df.reset_index()
+    else:
+        logger.info("Timeline continuity check passed: no missing hourly records.")
+
+    logger.info(
+        f"Loaded {len(df)} validated hourly observations (including lookback/forecast buffers) "
+        f"for period {period.strftime('%Y-%m')}."
+    )
     return df
 
 
-def compute_temporal_embeddings(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Computes sine/cosine cyclical transformations for temporal variables.
+def compute_temporal_embeddings(
+    env: WaidBoot, 
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Computes sine/cosine cyclical transformations and theoretical solar radiation.
 
     Encodes 'Hour of Day' (0-23) and 'Day of Year' (1-365) as continuous
-    2D cyclical coordinates to preserve temporal continuity across boundaries.
+    2D cyclical coordinates and calculates deterministic clear-sky solar radiation.
 
-    Args:
-        df (pd.DataFrame): DataFrame containing a validated 'timestamp' column.
-
-    Returns:
-        pd.DataFrame: Copy of input DataFrame enriched with 4 cyclical feature columns.
+    @param env Initialized framework environment context (WaidBoot).
+    @param df Input DataFrame containing a validated 'timestamp' column and meteorological features.
+    @return Copy of input DataFrame enriched with 5 additional feature columns.
     """
     df = df.copy()
     hour = df['timestamp'].dt.hour
@@ -127,6 +171,23 @@ def compute_temporal_embeddings(df: pd.DataFrame) -> pd.DataFrame:
     df['doy_sin'] = np.sin(2 * np.pi * doy / 365.25)
     df['doy_cos'] = np.cos(2 * np.pi * doy / 365.25)
 
+    # Compute theoretical solar radiation aligned with UTC timeline
+    ts_utc = df['timestamp']
+    if ts_utc.dt.tz is None:
+        ts_utc = ts_utc.dt.tz_localize('UTC')
+    else:
+        ts_utc = ts_utc.dt.tz_convert('UTC')
+
+    humidity_vals = df['outdoor_humidity'].values if 'outdoor_humidity' in df.columns else df['humidity'].values
+
+    df['theo_solar'] = calculate_theoretical_solar_radiation(
+        ts_utc.values,
+        humidity=humidity_vals,
+        input_tz="UTC",
+        lat=env.ecowitt_latitude,
+        lon=env.ecowitt_longitude
+    )
+
     return df
 
 
@@ -134,57 +195,59 @@ def generate_sliding_window_tensors(
     env: WaidBoot, 
     df: pd.DataFrame, 
     lookback: int, 
-    forecast: int
+    forecast: int,
 ) -> Tuple[np.ndarray, np.ndarray, pd.Series]:
-    """
-    Constructs multi-feature 3D sliding window input tensors (X) and 3D target delta tensors (Y).
+    """Vectorized construction of multi-feature 3D input tensors (X) and 3D target delta tensors (Y).
 
-    Args:
-        df (pd.DataFrame): Input DataFrame with meteo features and cyclical embeddings.
-        lookback (int): Number of historical lookback hours.
-        forecast (int): Number of future forecasting hours.
-
-    Returns:
-        Tuple[np.ndarray, np.ndarray, pd.Series]:
-            - X (np.ndarray): 3D Input feature array of shape (samples, lookback, 10), dtype float32.
-            - Y (np.ndarray): 3D Target deltas array of shape (samples, forecast, 6), dtype float32.
-            - timestamps_t (pd.Series): Series of timestamps corresponding to current time t.
+    @param env Initialized framework environment context (WaidBoot).
+    @param df Processed DataFrame containing telemetry, embeddings, and solar features.
+    @param lookback Number of historical timesteps (hours) per input window.
+    @param forecast Number of future timesteps (hours) per target horizon.
+    @return Tuple containing:
+            - X (np.ndarray): 3D input tensor of shape (samples, lookback, 11), dtype float32.
+            - Y (np.ndarray): 3D target deltas array of shape (samples, forecast, 6), dtype float32.
+            - timestamps_series (pd.Series): Timestamps corresponding to current reference time t.
     """
     standard_features = [feature["standard"] for feature in env.output_features]
-    feature_matrix = df[standard_features].values
+    feature_matrix = df[standard_features].values.astype(np.float32)
     
-    # Combine meteorological features with cyclical temporal embeddings per timestep
-    cyclical_matrix = df[['hour_sin', 'hour_cos', 'doy_sin', 'doy_cos']].values  # Shape: (total_records, 4)
-    combined_features = np.concatenate([feature_matrix, cyclical_matrix], axis=1)  # Shape: (total_records, 10)
+    cyclical_matrix = df[['hour_sin', 'hour_cos', 'doy_sin', 'doy_cos']].values.astype(np.float32)
+    theo_solar_matrix = df[['theo_solar']].values.astype(np.float32)
     
-    timestamps = df['timestamp']
-
-    X_list = []
-    Y_list = []
-    timestamps_t = []
-
+    combined_features = np.concatenate([feature_matrix, cyclical_matrix, theo_solar_matrix], axis=1)
+    
     total_records = len(df)
-    max_valid_idx = total_records - lookback - forecast
+    num_samples = total_records - lookback - forecast + 1
 
-    for i in range(max_valid_idx + 1):
-        # Index of current time t (end of lookback window)
-        t_curr_idx = i + lookback - 1
-        
-        # 3D input window: shape (lookback, 10)
-        x_window = combined_features[i : i + lookback]
-        
-        # 3D target delta window: future features minus current features at t
-        current_features = feature_matrix[t_curr_idx]
-        future_features = feature_matrix[t_curr_idx + 1 : t_curr_idx + 1 + forecast]
-        y_window = future_features - current_features  # Shape: (forecast, 6)
+    if num_samples <= 0:
+        return (
+            np.empty((0, lookback, 11), dtype=np.float32),
+            np.empty((0, forecast, 6), dtype=np.float32),
+            pd.Series([], name="timestamp_t", dtype="datetime64[ns]")
+        )
 
-        X_list.append(x_window)
-        Y_list.append(y_window)
-        timestamps_t.append(timestamps.iloc[t_curr_idx])
+    # Generate 3D input windows X (shape: num_samples, lookback, 11)
+    X_views = np.lib.stride_tricks.sliding_window_view(
+        combined_features, window_shape=(lookback, combined_features.shape1 if hasattr(combined_features, 'shape1') else combined_features.shape[1])
+    )
+    X = X_views[:num_samples, 0, :, :].copy()
 
-    X = np.array(X_list, dtype=np.float32)
-    Y = np.array(Y_list, dtype=np.float32)
-    timestamps_series = pd.Series(timestamps_t, name="timestamp_t")
+    # Generate 3D future feature windows
+    Y_views = np.lib.stride_tricks.sliding_window_view(
+        feature_matrix, window_shape=(forecast, feature_matrix.shape[1])
+    )
+    future_features = Y_views[lookback : lookback + num_samples, 0, :, :]
+
+    # Current features at t (index lookback - 1)
+    current_features = feature_matrix[lookback - 1 : lookback - 1 + num_samples, np.newaxis, :]
+
+    # Target deltas Y (shape: num_samples, forecast, 6)
+    Y = future_features - current_features
+
+    # Reference timestamps t
+    t_curr_indices = np.arange(lookback - 1, lookback - 1 + num_samples)
+    timestamps_series = df['timestamp'].iloc[t_curr_indices].reset_index(drop=True)
+    timestamps_series.name = "timestamp_t"
 
     return X, Y, timestamps_series
 
@@ -194,20 +257,16 @@ def generate_sliding_window_tensors(
 # ==============================================================================
 
 def prepare_raw_data(env: WaidBoot, args: argparse.Namespace) -> int:
-    """
-    Generates and serializes 3D feature and target tensors to disk.
+    """Generates and serializes 3D feature and target tensors to disk.
 
-    Args:
-        env (WaidBoot): Initialized environment context.
-        args (argparse.Namespace): Parsed command line arguments.
-
-    Returns:
-        int: Execution result code.
+    @param env Initialized environment context (WaidBoot).
+    @param args Parsed command line arguments containing the target period.
+    @return Exit status code (WaidExit).
     """
     logger.info(f"Starting 3D raw data preparation for period: {args.period.strftime('%Y-%m')}")
     
     df_raw = load_ecowitt_telemetry(env, args.period)
-    df_features = compute_temporal_embeddings(df_raw)
+    df_features = compute_temporal_embeddings(env, df_raw)
 
     X, Y, timestamps_t = generate_sliding_window_tensors(
         env,
@@ -235,12 +294,11 @@ def prepare_raw_data(env: WaidBoot, args: argparse.Namespace) -> int:
 
 
 def inspect_tensors(env: WaidBoot, args: argparse.Namespace) -> None:
-    """
-    Performs verification and logs metadata about the generated 3D tensors.
+    """Performs verification and logs metadata about the generated 3D tensors.
 
-    Args:
-        env (WaidBoot): Initialized environment context.
-        args (argparse.Namespace): Parsed command line arguments.
+    @param env Initialized environment context (WaidBoot).
+    @param args Parsed command line arguments containing the target period.
+    @return None
     """
     x_path = Path(env.ml_tensors_dir) / f"X_raw_{args.period.strftime('%Y_%m')}.pkl"
     if x_path.exists():
@@ -256,11 +314,9 @@ def inspect_tensors(env: WaidBoot, args: argparse.Namespace) -> None:
 # ==============================================================================
 
 def main() -> int:
-    """
-    Main entry point for the tensor preparation step.
-    
-    Returns:
-        int: Process exit code matching WaidExit enum.
+    """Main entry point for the tensor preparation step.
+
+    @return Process exit code matching WaidExit enum.
     """
     try:
         env = WaidBoot()

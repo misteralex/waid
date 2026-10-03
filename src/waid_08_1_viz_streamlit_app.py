@@ -61,8 +61,8 @@ from waid_shared import get_last_inference_datetime
 
 
 def get_deployment_status() -> str:
-    """
-    @brief Evaluates the deployment package sync status relative to the source script.
+    """Evaluates the deployment package sync status relative to the source script.
+
     @details Checks whether the deployment directory exists and if the source script mtime is newer.
     @return Deployment status identifier string: "MISSING", "OUTDATED", "SYNCED", or "UNKNOWN".
     """
@@ -83,15 +83,16 @@ def get_deployment_status() -> str:
 
 
 def run_deployment_setup(env: WaidBoot) -> None:
-    """
-    @brief Generates or updates the standalone target deployment package.
+    """Generates or updates the standalone target deployment package.
+
     @details Copies database dependencies, updates source script headers, and writes requirements.txt.
     @param env WaidBoot configuration instance containing system environment settings.
+    @return None
     """
     deploy_dir = Path(env.deploy_dir)
     src_script = Path(__file__).resolve()
-    db_source = Path(env.waid_data_dir / env.deploy_db_file)
-    db_dest = Path(deploy_dir / "data" / env.deploy_db_file)
+    db_source = Path(env.deploy_db_file)
+    db_dest = Path(deploy_dir / "data" / os.path.basename(env.deploy_db_file))
 
     logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
     logger.info(f"🔶 DB Target   : {getattr(env, 'target_env', os.getenv('WAID_TARGET_ENV', 'draft'))}")    
@@ -135,8 +136,8 @@ def run_deployment_setup(env: WaidBoot) -> None:
 
 @st.cache_data(ttl=300)
 def get_available_dates() -> list:
-    """
-    @brief Queries distinct dates available in the forecasts database for selector UI elements.
+    """Queries distinct dates available in the forecasts database for selector UI elements.
+
     @details Selects distinct timestamps from public_forecasts using Supabase or SQLite based on deployment mode.
     @return Sorted list of date strings (YYYY-MM-DD) in descending order.
     """
@@ -173,8 +174,10 @@ def get_available_dates() -> list:
             return []
     else:
         base_dir = Path(__file__).resolve().parent
-        cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
-        local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
+        current_deploy_db = os.path.basename(env.deploy_db_file)
+        deploy_dir = base_dir if base_dir.name == "deploy" else base_dir / "deploy"
+        cloud_deploy_db = deploy_dir / "data" / current_deploy_db
+        local_deploy_db = Path(env.deploy_dir) / "data" / current_deploy_db
         db_path = cloud_deploy_db if cloud_deploy_db.exists() else (local_deploy_db if local_deploy_db.exists() else None)
 
         if not db_path or not db_path.exists():
@@ -195,8 +198,8 @@ def get_available_dates() -> list:
 
 @st.cache_data(ttl=300)
 def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.DataFrame:
-    """
-    @brief Loads analytics records filtered by target date and specific weather feature key.
+    """Loads analytics records filtered by target date and specific weather feature key.
+
     @details Fetches required columns for time series rendering to minimize payload and memory consumption.
     @param target_date Target date string formatted as YYYY-MM-DD.
     @param feature Optional weather feature key (e.g., 'temp', 'rh', 'pres', 'wind', 'solar', 'rain').
@@ -210,26 +213,25 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
         deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
         target_tz = "UTC"
 
+    # Define interval for the full LOCAL day
     local_start = pd.Timestamp(f"{target_date} 00:00:00", tz=target_tz)
     local_end = pd.Timestamp(f"{target_date} 23:59:59", tz=target_tz)
 
-    start_ts = local_start.tz_convert('UTC').strftime("%Y-%m-%d %H:%M:%S")
-    end_ts = local_end.tz_convert('UTC').strftime("%Y-%m-%d %H:%M:%S")
+    # Convert to UTC for SQL query filter
+    start_ts = local_start.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S")
+    end_ts = local_end.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S")
 
-    # Select target feature columns only to minimize query payload and memory usage
-    if feature:
-        columns_to_select = [
-            "timestamp",
-            f"pred_{feature}",
-            f"diff_{feature}",
-            f"historical_bias_{feature}",
-            f"drift_vs_bias_{feature}",
-            f"{feature}_era5",
-            f"abs_error_{feature}"
-        ]
-        select_clause = ", ".join(columns_to_select)
-    else:
-        select_clause = "*"
+    # Standard columns always available in SQLite and Supabase schemas
+    base_columns = [
+        "timestamp",
+        "created_at",
+        f"pred_{feature}",
+        f"diff_{feature}",
+        f"historical_bias_{feature}",
+        f"drift_vs_bias_{feature}",
+        f"{feature}_era5",
+        f"abs_error_{feature}"
+    ] if feature else []
 
     if deploy_mode == "cloud":
         try:
@@ -247,6 +249,11 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
             engine = create_engine(supabase_url, poolclass=NullPool)
 
             schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
+            
+            # On Supabase, include calculated actual_{feature} column if present in the view
+            columns_to_select = base_columns + [f"actual_{feature}"] if feature else []
+            select_clause = ", ".join(columns_to_select) if columns_to_select else "*"
+
             query = text(f"""
                 SELECT {select_clause} FROM {schema_prefix}public_forecasts 
                 WHERE timestamp >= :start_ts AND timestamp <= :end_ts 
@@ -255,13 +262,27 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
             df = pd.read_sql_query(query, engine, params={"start_ts": start_ts, "end_ts": end_ts})
 
         except Exception as e:
-            st.error(f"Supabase connection error: {e}")
-            return pd.DataFrame()
-
+            # Fallback for Supabase if the view lacks the actual_* column
+            if feature and f"actual_{feature}" in str(e):
+                select_clause = ", ".join(base_columns)
+                query = text(f"""
+                    SELECT {select_clause} FROM {schema_prefix}public_forecasts 
+                    WHERE timestamp >= :start_ts AND timestamp <= :end_ts 
+                    ORDER BY timestamp ASC;
+                """)
+                df = pd.read_sql_query(query, engine, params={"start_ts": start_ts, "end_ts": end_ts})
+            else:
+                st.error(f"Supabase connection error: {e}")
+                return pd.DataFrame()
     else:
         base_dir = Path(__file__).resolve().parent
-        cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
-        local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
+        current_deploy_db = os.path.basename(env.deploy_db_file)
+        cloud_deploy_db = (
+            base_dir / "data" / current_deploy_db
+            if base_dir.name == "deploy"
+            else base_dir / "deploy" / "data" / current_deploy_db
+        )
+        local_deploy_db = Path(env.deploy_dir) / "data" / current_deploy_db
         db_path = cloud_deploy_db if cloud_deploy_db.exists() else (local_deploy_db if local_deploy_db.exists() else None)
         
         if not db_path or not db_path.exists():
@@ -269,6 +290,8 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
 
         try:
             with sqlite3.connect(db_path) as conn:
+                # For SQLite, select exact columns matching real schema (without actual_*)
+                select_clause = ", ".join(base_columns) if feature else "*"
                 query = f"SELECT {select_clause} FROM public_forecasts WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC"
                 df = pd.read_sql_query(query, conn, params=(start_ts, end_ts))
         except Exception as e:
@@ -284,7 +307,7 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
     for k in target_keys:
         numeric_cols.extend([
             f'pred_{k}', f'diff_{k}', f'historical_bias_{k}', 
-            f'drift_vs_bias_{k}', f'{k}_era5', f'abs_error_{k}'
+            f'drift_vs_bias_{k}', f'{k}_era5', f'abs_error_{k}', f'actual_{k}'
         ])
 
     for col in numeric_cols:
@@ -296,8 +319,8 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
 
 @st.cache_data(ttl=300)
 def check_era5_availability(target_date: str) -> bool:
-    """
-    @brief Evaluates if ERA5 reanalysis ground truth data is populated for a target date.
+    """Evaluates if ERA5 reanalysis ground truth data is populated for a target date.
+
     @param target_date Target date string formatted as YYYY-MM-DD.
     @return True if non-null ERA5 temperature values exist; False otherwise.
     """
@@ -309,9 +332,9 @@ def check_era5_availability(target_date: str) -> bool:
 
 @st.cache_data(ttl=300)
 def fetch_last_inference_timestamp() -> str:
-    """
-    @brief Retrieves the timestamp corresponding to the latest machine learning inference execution.
-    @details Checks created_at or timestamp columns in public_forecasts across configured storage backends.
+    """Retrieves the timestamp corresponding to the latest machine learning inference execution.
+
+    @details Queries created_at or timestamp in public_forecasts using local time comparison.
     @return Formatted timestamp string (YYYY-MM-DD HH:MM:SS) or "N/A" if unavailable.
     """
     try:
@@ -319,6 +342,8 @@ def fetch_last_inference_timestamp() -> str:
         deploy_mode = getattr(env, "deploy_mode", os.getenv("WAID_DEPLOY_MODE", "local")).lower()
     except Exception:
         deploy_mode = os.getenv("WAID_DEPLOY_MODE", "local").lower()
+
+    raw_ts = None
 
     if deploy_mode == "cloud":
         try:
@@ -334,28 +359,29 @@ def fetch_last_inference_timestamp() -> str:
 
             supabase_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}?sslmode=require"
             engine = create_engine(supabase_url, poolclass=NullPool)
-
             schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
             
-            try:
-                query = text(f"SELECT MAX(created_at) AS last_ts FROM {schema_prefix}public_forecasts;")
-                with engine.connect() as conn:
-                    res = conn.execute(query).scalar()
-            except Exception:
-                query = text(f"SELECT MAX(timestamp) AS last_ts FROM {schema_prefix}public_forecasts;")
-                with engine.connect() as conn:
-                    res = conn.execute(query).scalar()
+            # On PostgreSQL (Supabase), retrieve MAX(created_at)
+            query = text(f"""
+                SELECT MAX(created_at) AS last_ts 
+                FROM {schema_prefix}public_forecasts;
+            """)
+            with engine.connect() as conn:
+                raw_ts = conn.execute(query).scalar()
 
-            if res:
-                return pd.to_datetime(res).strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
             st.error(f"Error fetching last inference from Supabase: {e}")
             return "N/A"
     else:
         base_dir = Path(__file__).resolve().parent
-        cloud_deploy_db = base_dir / "data" / env.deploy_db_file if base_dir.name == "deploy" else base_dir / "deploy" / "data" / env.deploy_db_file
-        local_deploy_db = Path(env.deploy_dir) / "data" / env.deploy_db_file
-        data_dir_db = Path(env.waid_data_dir) / env.deploy_db_file
+        current_deploy_db = os.path.basename(env.deploy_db_file)
+        cloud_deploy_db = (
+            base_dir / "data" / current_deploy_db
+            if base_dir.name == "deploy"
+            else base_dir / "deploy" / "data" / current_deploy_db
+        )
+        local_deploy_db = Path(env.deploy_dir) / "data" / current_deploy_db
+        data_dir_db = Path(env.waid_data_dir) / current_deploy_db
 
         db_path = None
         for candidate in [cloud_deploy_db, local_deploy_db, data_dir_db]:
@@ -366,22 +392,38 @@ def fetch_last_inference_timestamp() -> str:
         if not db_path:
             return "N/A"
 
-        dt = get_last_inference_datetime(db_path, table_name="public_forecasts")
-        if dt:
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        # In local SQLite, compare created_at with system local time
+        try:
+            with sqlite3.connect(db_path) as conn:
+                query = """
+                    SELECT MAX(created_at) AS last_ts 
+                    FROM public_forecasts
+                    WHERE created_at <= datetime('now', 'localtime');
+                """
+                df_res = pd.read_sql_query(query, conn)
+                if not df_res.empty and pd.notnull(df_res["last_ts"].iloc[0]):
+                    raw_ts = df_res["last_ts"].iloc[0]
+        except Exception as e:
+            logger.debug(f"Error querying SQLite: {e}")
+            return "N/A"
+
+    if raw_ts:
+        # Since created_at is ALREADY in local time, return directly as string
+        return str(raw_ts)
 
     return "N/A"
 
 
 def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, unit: str, plotly_config: dict) -> None:
-    """
-    @brief Renders metrics cards and interactive Plotly visual comparisons for a weather feature tab.
+    """Renders metrics cards and interactive Plotly visual comparisons for a weather feature tab.
+
     @param env WaidBoot system environment configuration instance.
     @param selected_date Target date string formatted as YYYY-MM-DD.
     @param key Weather feature attribute identifier (e.g., 'temp', 'rh').
     @param label Human-readable feature title for chart headers.
     @param unit Measurement unit representation string (e.g., '°C', 'hPa').
     @param plotly_config Dictionary containing standard Plotly figure display parameters.
+    @return None
     """
     df_day = load_public_data_for_feature(selected_date, feature=key)
 
@@ -389,32 +431,62 @@ def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, 
         st.warning(f"No data available for {label} on {selected_date}.")
         return
 
-    # Parse and convert UTC timestamp to station local time
+    # 1. Parsing and hourly normalization strictly in UTC
     df_day['ts_target'] = pd.to_datetime(df_day['timestamp'], errors='coerce')
     if df_day['ts_target'].dt.tz is None:
         df_day['ts_target'] = df_day['ts_target'].dt.tz_localize('UTC')
 
-    target_tz = getattr(env, "tz_timezone", None)
+    df_day['ts_target'] = df_day['ts_target'].dt.floor('h')
+
+    # 2. Define target day window in UTC (00:00:00 - 23:00:00)
+    day_start = pd.Timestamp(f"{selected_date} 00:00:00", tz="UTC")
+    day_end = pd.Timestamp(f"{selected_date} 23:00:00", tz="UTC")
+
+    # 3. Filter target day window
+    df_day = df_day[(df_day['ts_target'] >= day_start) & (df_day['ts_target'] <= day_end)].copy()
+
+    if df_day.empty:
+        st.warning(f"No data available for {label} on {selected_date}.")
+        return
+
+    # 4. Deduplication keeping intact UTC timeline
+    if 'created_at' in df_day.columns:
+        df_day = df_day.sort_values(by=['ts_target', 'created_at'], ascending=[True, True])
+    
+    df_day = df_day.drop_duplicates(subset=['ts_target'], keep='last').sort_values('ts_target')
+
+    # 5. Generate X-axis in local time solely for visualization display
+    target_tz = env.tz_timezone
     if not target_tz:
         raise WError(
-            f"Failed to identifier attribute 'tz_timezone' or not defined: {e}", code=WaidExit.DATA_FAIL
+            "Failed to identify attribute 'tz_timezone'", code=WaidExit.DATA_FAIL
         )
 
-    # ts_display contains the date/time converted to the local timezone
-    df_day['ts_display'] = df_day['ts_target'].dt.tz_convert(target_tz).dt.tz_localize(None)
+    df_day['ts_display'] = (
+        df_day['ts_target']
+        .dt.tz_convert(target_tz)
+        .dt.tz_localize(None)
+    )
 
-    # Reconstruct local sensor reading (Ecowitt)
-    if f'pred_{key}' in df_day.columns and f'diff_{key}' in df_day.columns:
-        valid_mask = df_day[f'diff_{key}'].notnull()
-        raw_actual = df_day[f'pred_{key}'] - df_day[f'diff_{key}']
-        
+    # -------------------------------------------------------------------------
+    # Reconstruct/Extract local sensor reading (Ecowitt)
+    # -------------------------------------------------------------------------
+    if f'actual_{key}' in df_day.columns and df_day[f'actual_{key}'].notnull().any():
+        df_day[f'ecowitt_{key}'] = pd.to_numeric(df_day[f'actual_{key}'], errors='coerce')
+    elif f'pred_{key}' in df_day.columns and f'diff_{key}' in df_day.columns:
+        # For all features (including solar): actual = pred - diff
+        df_day[f'ecowitt_{key}'] = df_day[f'pred_{key}'] - df_day[f'diff_{key}']
+    else:
         df_day[f'ecowitt_{key}'] = np.nan
-        if key in ['wind', 'rain', 'solar']:
-            df_day.loc[valid_mask, f'ecowitt_{key}'] = raw_actual[valid_mask].clip(lower=0.0)
-        elif key == 'rh':
-            df_day.loc[valid_mask, f'ecowitt_{key}'] = raw_actual[valid_mask].clip(lower=0.0, upper=100.0)
-        else:
-            df_day.loc[valid_mask, f'ecowitt_{key}'] = raw_actual[valid_mask]
+
+    # Clean numeric types
+    df_day[f'ecowitt_{key}'] = pd.to_numeric(df_day[f'ecowitt_{key}'], errors='coerce')
+
+    # Physical clipping bounds (prevents negative values due to sensor/model noise)
+    if key in ['wind', 'rain', 'solar'] and f'ecowitt_{key}' in df_day.columns:
+        df_day[f'ecowitt_{key}'] = df_day[f'ecowitt_{key}'].clip(lower=0.0)
+    elif key == 'rh' and f'ecowitt_{key}' in df_day.columns:
+        df_day[f'ecowitt_{key}'] = df_day[f'ecowitt_{key}'].clip(lower=0.0, upper=100.0)
 
     st.subheader(f"Feature: {label} ({unit})")
     
@@ -438,7 +510,7 @@ def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, 
 
     st.markdown("---")
 
-    # Using ts_display for all plots ensures that the x-axis reflects the local timezone of the station.
+    # 1. Model Prediction vs Local Sensor (Ecowitt)
     st.markdown("#### 1. Model Prediction vs Local Sensor (Ecowitt)")
     fig1 = go.Figure()
     fig1.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
@@ -458,6 +530,7 @@ def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, 
         key=f"plotly_fig1_{key}_{selected_date}"
     )
 
+    # 2. Local Sensor (Ecowitt) vs ERA5 Reanalysis Truth
     st.markdown("#### 2. Local Sensor (Ecowitt) vs ERA5 Reanalysis Truth")
     fig2 = go.Figure()
     if f'ecowitt_{key}' in df_day.columns:
@@ -478,6 +551,7 @@ def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, 
         key=f"plotly_fig2_{key}_{selected_date}"
     )
 
+    # 3. Model Prediction vs ERA5 Reanalysis Truth
     st.markdown("#### 3. Model Prediction vs ERA5 Reanalysis Truth")
     fig3 = go.Figure()
     fig3.add_trace(go.Scatter(x=df_day['ts_display'], y=df_day[f'pred_{key}'], name='Prediction', mode='lines+markers', line=dict(color='#1f77b4', width=2)))
@@ -499,9 +573,10 @@ def render_feature_tab(env: WaidBoot, selected_date: str, key: str, label: str, 
     
 
 def run_dashboard(env: WaidBoot) -> None:
-    """
-    @brief Assembles and executes main Streamlit web application components and layout.
+    """Assembles and executes main Streamlit web application components and layout.
+
     @param env WaidBoot system environment configuration instance.
+    @return None
     """
     st.set_page_config(page_title="WAID Public Analytics", layout="wide")
 
@@ -583,8 +658,8 @@ def run_dashboard(env: WaidBoot) -> None:
 
 
 def main() -> int:
-    """
-    @brief Main entry point parsing command-line parameters and initiating workflow execution.
+    """Main entry point parsing command-line parameters and initiating workflow execution.
+
     @return Process exit code (0 for success, non-zero for errors).
     """
     try:      

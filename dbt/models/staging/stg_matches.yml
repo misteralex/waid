@@ -1,3 +1,12 @@
+# ==============================================================================
+# @file stg_matches.yml
+# @brief Configuration and data quality test definitions for stg_matches model.
+# @details Defines schema validation rules, unique constraints, non-null tests,
+#          and acceptable ranges for Ecowitt and ERA5 temperature fields.
+# @author AF
+# @date 2026
+# ==============================================================================
+
 version: 2
 
 models:
@@ -14,20 +23,23 @@ models:
       - name: ecowitt_temp
         tests:
           - dbt_utils.accepted_range:
-              min_value: -30
-              max_value: 50
+              arguments:
+                min_value: -30
+                max_value: 50
       
       # Validation for unified ERA5 fields
       - name: era5_temp
         tests:
           - dbt_utils.accepted_range:
-              min_value: -60
-              max_value: 60
+              arguments:
+                min_value: -60
+                max_value: 60
               
       # Consistency check between ground sensor and reanalysis model
       - name: bias_temp
         description: "Calculated bias (difference) between Ecowitt and ERA5 temperature measurements."
         tests:
           - dbt_utils.accepted_range:
-              min_value: -20
-              max_value: 20 # Maximum tolerance threshold between local sensor and benchmark model
+              arguments:
+                min_value: -20
+                max_value: 20 # Maximum tolerance threshold between local sensor and benchmark model

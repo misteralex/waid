@@ -9,15 +9,17 @@
 @date 2026
 """
 
-import time
+import argparse
+import os
+import requests
+import sqlite3
 import subprocess
 import sys
-import os
-import argparse
-from pathlib import Path
-from loguru import logger
+import time
 from datetime import datetime, timedelta
-import sqlite3
+from pathlib import Path
+from zoneinfo import ZoneInfo
+from loguru import logger
 
 if not os.environ.get("WAID_SOURCE"):
     sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
@@ -34,6 +36,7 @@ from waid_shared import (
     generate_period_range,
     get_last_inference_datetime,
 )
+
 
 def check_initial_setup_needed(env: WaidBoot) -> bool:
     """
@@ -53,12 +56,16 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     @return The exit code of the subprocess execution.
     """
     cmd = [sys.executable, "waid_orchestrate_lab.py", "--run-mode", mode]
-    
+
     if extra_args is None:
         extra_args = []
 
     raw_mock_now = os.environ.get("WAID_MOCK_NOW", "").strip()
-    is_mock_active = bool(raw_mock_now) and raw_mock_now.lower() not in ("none", "null", "false")
+    is_mock_active = bool(raw_mock_now) and raw_mock_now.lower() not in (
+        "none",
+        "null",
+        "false",
+    )
 
     if mode == "incremental" and "--period" not in extra_args:
         if is_mock_active:
@@ -66,7 +73,7 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
         else:
             current_month = datetime.now().strftime("%Y-%m")
         extra_args.extend(["--period", current_month])
-        
+
     if extra_args:
         cmd.extend(extra_args)
 
@@ -80,74 +87,122 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     return result.returncode
 
 
-def clean_target_range(env: WaidBoot, start_dt: datetime, end_dt: datetime) -> None:
+def ping_streamlit(env: WaidBoot, timeout: int = 15) -> None:
     """
-    @brief Atomically cleans all predictions written within the interval [start_dt, end_dt]
-           across Lab DB, Local Deploy DB, and Supabase Cloud.
-    @param env WaidBoot configuration instance.
-    @param start_dt Start datetime for the cleaning range.
-    @param end_dt End datetime for the cleaning range.
+    @brief Sends an HTTP GET request to keep the remote Streamlit web app active during pipeline execution cycles.
+    @param env WaidBoot configuration instance containing the target Streamlit URL.
+    @param timeout HTTP request timeout in seconds (default is 15 seconds).
     @return None
     """
-    str_begin = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-    str_end = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    url = env.streamlit_url
+    logger.info(
+        f"Keep-alive ping for Streamlit ({url}) with a timeout of {timeout} seconds..."
+    )
 
-    logger.warning(f"[RETRO_CLEAN] Cleaning target range from {str_begin} to {str_end}...")
-    
-    # 1. LAB DB (inference_forecast, inference_stats, inference_quality)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    try:
+        with requests.Session() as session:
+            response = session.get(url, headers=headers, timeout=timeout)
+            logger.info(
+                f"[Keep-Alive] Streamlit ping successful! Status code: {response.status_code}"
+            )
+    except Exception as e:
+        logger.error(f"[Keep-Alive] Error during Streamlit ping: {e}")
+
+
+def clean_target_range(
+    env: WaidBoot, start_dt: datetime, end_dt: datetime
+) -> None:
+    """
+    @brief Atomically cleans predictions written within the interval [start_dt, end_dt]
+           in local SQLite databases. Remote Supabase cleanup is bypassed in favor of 
+           downstream UPSERT transfers.
+    @param env WaidBoot configuration instance.
+    @param start_dt Range start datetime.
+    @param end_dt Range end datetime.
+    @return None
+    """
+    local_tz = ZoneInfo(env.tz_timezone)
+    utc_tz = ZoneInfo("UTC")
+
+    start_dt_local = (
+        start_dt.replace(tzinfo=local_tz)
+        if start_dt.tzinfo is None
+        else start_dt.astimezone(local_tz)
+    )
+    end_dt_local = (
+        end_dt.replace(tzinfo=local_tz)
+        if end_dt.tzinfo is None
+        else end_dt.astimezone(local_tz)
+    )
+
+    start_dt_utc = start_dt_local.astimezone(utc_tz)
+    end_dt_utc = end_dt_local.astimezone(utc_tz)
+
+    str_begin_utc = start_dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+    str_end_utc = end_dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    str_begin_loc = start_dt_local.strftime("%Y-%m-%d %H:%M:%S")
+    str_end_loc = end_dt_local.strftime("%Y-%m-%d %H:%M:%S")
+
+    logger.warning(
+        f"[RETRO_CLEAN] Target Local: {str_begin_loc} -> {str_end_loc} | "
+        f"Converted UTC: {str_begin_utc} -> {str_end_utc}"
+    )
+
+    # 1. LAB DB (SQLite)
     lab_db_path = Path(env.waid_db)
     if lab_db_path.exists():
         with sqlite3.connect(lab_db_path) as conn:
             cursor = conn.cursor()
-            lab_tables = ["inference_forecast", "inference_stats", "inference_quality"]
-            logger.debug(f"[RETRO_CLEAN] Cleaning Lab DB tables: {lab_tables}")
+            lab_tables = [
+                "inference_forecast",
+                "inference_stats",
+                "inference_quality",
+            ]
             for table in lab_tables:
-                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+                cursor.execute(
+                    f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
+                )
                 if cursor.fetchone():
                     cursor.execute(
-                        f"DELETE FROM {table} WHERE datetime(timestamp) BETWEEN datetime(?) AND datetime(?)",
-                        (str_begin, str_end)
+                        f"""
+                        DELETE FROM {table} 
+                        WHERE datetime(timestamp) BETWEEN datetime(?) AND datetime(?)
+                        """,
+                        (str_begin_utc, str_end_utc),
                     )
             conn.commit()
 
-    # 2. LOCAL DEPLOY DB (public_forecasts in waid_deploy.db)
-    deploy_db_path = Path(env.waid_data_dir) / env.deploy_db_file
+    # 2. LOCAL DEPLOY DB (SQLite)
+    deploy_db_path = Path(env.deploy_db_file)
     if deploy_db_path.exists():
         with sqlite3.connect(deploy_db_path) as conn:
-            logger.debug(f"[RETRO_CLEAN] Cleaning Local Deploy DB tables: public_forecasts")
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='public_forecasts'")
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='public_forecasts'"
+            )
             if cursor.fetchone():
                 cursor.execute(
-                    "DELETE FROM public_forecasts WHERE datetime(timestamp) BETWEEN datetime(?) AND datetime(?)",
-                    (str_begin, str_end)
+                    """
+                    DELETE FROM public_forecasts 
+                    WHERE datetime(timestamp) BETWEEN datetime(?) AND datetime(?)
+                       OR datetime(created_at) BETWEEN datetime(?) AND datetime(?)
+                    """,
+                    (str_begin_utc, str_end_utc, str_begin_loc, str_end_loc),
                 )
                 conn.commit()
 
-    # 3. SUPABASE CLOUD (public_forecasts)
-    if env.deploy_mode == "cloud":
-        try:
-            from sqlalchemy import create_engine, text
-            from sqlalchemy.pool import NullPool
-            
-            db_config = env.active_db_config
-            schema_name = env.db_schema_target.lower()
-            supabase_url = (
-                f"postgresql+psycopg2://{db_config.user}:{db_config.password}"
-                f"@{db_config.host}:{db_config.port}/{db_config.dbname}?sslmode=require"
-            )
-            
-            engine = create_engine(supabase_url, poolclass=NullPool)
-            with engine.connect() as conn:
-                logger.debug(f"[RETRO_CLEAN] Cleaning Supabase DB tables: {schema_name}.public_forecasts")
-                delete_stmt = text(f"""
-                    DELETE FROM {schema_name}.public_forecasts 
-                    WHERE timestamp::timestamp BETWEEN :start_ts::timestamp AND :end_ts::timestamp;
-                """)
-                conn.execute(delete_stmt, {"start_ts": str_begin, "end_ts": str_end})
-                conn.commit()
-        except Exception as e:
-            logger.error(f"[RETRO_CLEAN] Failed to clean Supabase DB: {e}")
+    # 3. SUPABASE CLOUD (PostgreSQL) - BYPASSED
+    logger.info(
+        "[RETRO_CLEAN] Remote Supabase cleanup bypassed. Deduplication will be handled by UPSERT during deploy."
+    )
 
 
 def main() -> int:
@@ -156,10 +211,28 @@ def main() -> int:
     @return An integer representing the exit status (0 for success, non-zero for failure).
     """
     try:
-        parser = argparse.ArgumentParser(description="WAID Operational Scheduler & Retroactive Simulator")
-        parser.add_argument("--retroactive", action="store_true", help="Enable retroactive simulation mode")
-        parser.add_argument("--mock-begin", "--begin-period", dest="mock_begin", type=str, help="Start timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)")
-        parser.add_argument("--mock-end", "--end-period", dest="mock_end", type=str, help="End timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)")
+        parser = argparse.ArgumentParser(
+            description="WAID Operational Scheduler & Retroactive Simulator"
+        )
+        parser.add_argument(
+            "--retroactive",
+            action="store_true",
+            help="Enable retroactive simulation mode",
+        )
+        parser.add_argument(
+            "--mock-begin",
+            "--begin-period",
+            dest="mock_begin",
+            type=str,
+            help="Start timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)",
+        )
+        parser.add_argument(
+            "--mock-end",
+            "--end-period",
+            dest="mock_end",
+            type=str,
+            help="End timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)",
+        )
         args = parser.parse_args()
 
         env = WaidBoot()
@@ -167,58 +240,84 @@ def main() -> int:
         # --- RETROACTIVE MODE ---
         if args.retroactive:
             if not args.mock_begin or not args.mock_end:
-                logger.error("Both start (--mock-begin / --begin-period) and end (--mock-end / --end-period) timestamps are required in --retroactive mode.")
+                logger.error(
+                    "Both start (--mock-begin / --begin-period) and end (--mock-end / --end-period) timestamps are required in --retroactive mode."
+                )
                 return WaidExit.CONFIG_FAIL
 
-            begin_dt = datetime.strptime(args.mock_begin, "%Y-%m-%d %H:%M:%S")
-            end_dt = datetime.strptime(args.mock_end, "%Y-%m-%d %H:%M:%S")
-            current_dt = begin_dt
-            logger.warning(f"[RETRO] Executing retroactive simulation from {begin_dt} to {end_dt}...")
-            
-            # Initial DBT setup
-            extra_passthrough = ["--only-setup"]
-            code = run_pipeline("incremental", extra_args=extra_passthrough)
-            if code != 0:
-                logger.error(f"Pipeline failed at DBT setup step with exit code {code}")
+            local_tz = ZoneInfo(env.tz_timezone)
+
+            # Preserve native local datetimes for mock clock orchestration
+            begin_dt_local = datetime.strptime(
+                args.mock_begin, "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=local_tz)
+            end_dt_local = datetime.strptime(
+                args.mock_end, "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=local_tz)
+
+            logger.warning(
+                f"[RETRO] Executing retroactive simulation from {begin_dt_local} to {end_dt_local}..."
+            )
 
             try:
-                # 1. Initial Broad Cleaning of the entire interval
+                # Initial broad cleanup across the target interval
                 if env.retro_cleanup:
-                    logger.warning(f"[RETRO CLEAN] Executing initial broad cleaning from {begin_dt} to {end_dt}...")
-                    clean_target_range(env, begin_dt, end_dt)
+                    logger.warning(
+                        f"[RETRO CLEAN] Executing initial broad cleaning from {begin_dt_local} to {end_dt_local}..."
+                    )
+                    clean_target_range(env, begin_dt_local, end_dt_local)
 
-                # 2. Retroactive loop with preventive cleaning at each step
-                while current_dt < end_dt:
+                # Sequential retroactive simulation loop
+                current_dt = begin_dt_local
+                while current_dt < end_dt_local:
                     mock_now_str = current_dt.strftime("%Y-%m-%d %H:%M:%S")
                     os.environ["WAID_MOCK_NOW"] = mock_now_str
-                    
-                    # Calculate the forecast horizon interval for this step
-                    forecast_horizon_end = current_dt + timedelta(hours=env.mock_interval_hours)
-                    
-                    # Preventive cleaning of the window we are about to overwrite
-                    clean_target_range(env, current_dt, forecast_horizon_end)
-                    
-                    logger.info(f"=== [RETROACTIVE STEP] Processing timestamp: {mock_now_str} ===")
-                    
-                    extra_passthrough = ["--skip-ingestion-ml-deploy", "--mock-now", mock_now_str]
-                    code = run_pipeline("incremental", extra_args=extra_passthrough)
-                    
+
+                    logger.info(
+                        f"=== [RETROACTIVE STEP] Processing timestamp: {mock_now_str} ==="
+                    )
+
+                    extra_passthrough = [
+                        "--skip-ingestion-ml-deploy",
+                        "--mock-now",
+                        mock_now_str,
+                    ]
+                    code = run_pipeline(
+                        "incremental", extra_args=extra_passthrough
+                    )
+
                     if code != 0:
-                        logger.error(f"Pipeline failed at retroactive step {mock_now_str} with exit code {code}")
-                    
+                        logger.error(
+                            f"Pipeline failed at retroactive step {mock_now_str} with exit code {code}"
+                        )
+
                     current_dt += timedelta(hours=env.mock_interval_hours)
 
                 # Final publication step
-                logger.info("Executing final publication step (waid_08_1_viz_streamlit_app)...")
-                pub_code = run_pipeline("incremental", extra_args=["--start-from", "waid_08_1_viz_streamlit_app", "--skip-setup"])                
+                logger.info(
+                    "Executing final publication step (waid_07_1_export_deploy_db)..."
+                )
+                pub_code = run_pipeline(
+                    "incremental",
+                    extra_args=[
+                        "--start-from",
+                        "waid_07_1_export_deploy_db",
+                    ],
+                )
                 if pub_code == 0:
-                    logger.success("Final publication step completed successfully.")
+                    logger.success(
+                        "Final publication step completed successfully."
+                    )
                 else:
-                    logger.error(f"Publication step failed with code {pub_code}")
+                    logger.error(
+                        f"Publication step failed with code {pub_code}"
+                    )
 
             finally:
                 os.environ.pop("WAID_MOCK_NOW", None)
-                logger.info("WAID Retroactive Simulation completed and environment cleaned up.")
+                logger.info(
+                    "WAID Retroactive Simulation completed and environment cleaned up."
+                )
 
             return WaidExit.SUCCESS
 
@@ -227,34 +326,50 @@ def main() -> int:
         interval_hours = env.scheduled_interval_hours
 
         if check_initial_setup_needed(env):
-            logger.warning("Initial setup detected: No database or historical data found.")
+            logger.warning(
+                "Initial setup detected: No database or historical data found."
+            )
             logger.info("Triggering initial BACKFILL phase...")
             backfill_code = run_pipeline(
-                "backfill", 
-                ["--begin-period", env.backfill_begin_period.strftime("%Y-%m"), 
-                 "--end-period", env.backfill_end_period.strftime("%Y-%m")]
+                "backfill",
+                [
+                    "--begin-period",
+                    env.backfill_begin_period.strftime("%Y-%m"),
+                    "--end-period",
+                    env.backfill_end_period.strftime("%Y-%m"),
+                ],
             )
             if backfill_code != 0:
                 logger.error("Initial backfill failed. Check logs for details.")
         else:
-            logger.info("Existing environment detected. Skipping initial backfill.")
+            logger.info(
+                "Existing environment detected. Skipping initial backfill."
+            )
 
         while True:
+            ping_streamlit(env, 30)
+
             logger.info("Triggering scheduled incremental WAID pipeline run...")
             try:
                 extra_passthrough = ["--skip-ingestion-ml-deploy"]
                 code = run_pipeline("incremental", extra_args=extra_passthrough)
                 if code == 0:
-                    logger.success("Scheduled incremental run completed successfully.")
+                    logger.success(
+                        "Scheduled incremental run completed successfully."
+                    )
                 else:
-                    logger.error(f"Pipeline run finished with non-zero exit code: {code}")
+                    logger.error(
+                        f"Pipeline run finished with non-zero exit code: {code}"
+                    )
             except Exception as e:
                 logger.error(f"Critical error during pipeline execution: {e}")
                 return WaidExit.CRITICAL_FAIL
-                
-            logger.info(f"Sleeping for {interval_hours :.0f} hours until next execution...")
+
+            logger.info(
+                f"Sleeping for {interval_hours:.0f} hours until next execution..."
+            )
             time.sleep(interval_hours * 3600)
-        
+
     except WError as e:
         logger.error(f"[WAID ERROR] {e.message}")
         return e.code

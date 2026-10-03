@@ -10,7 +10,6 @@
 import os
 import sys
 import shutil
-import pprint
 from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -50,7 +49,7 @@ if not waid_source or not waid_source.strip():
 logger.info(f"WAID_SOURCE successfully resolved from environment: {waid_source}")
 
 # Load base environment file (boot.env) to ensure all critical variables are available
-load_dotenv(dotenv_path=Path(waid_source) / "config" / "boot.env", override=True)
+load_dotenv(dotenv_path=Path(waid_source) / "config" / "boot.env", override=os.environ.get("WAID_ALLOW_ENV_OVERRIDE"))
 
 # ==============================================================================
 # Log management section
@@ -148,7 +147,7 @@ def get_db_credentials(target: str) -> DBCredentials:
     @brief Retrieve database credentials based on explicit target resolution.
 
     @param target Database target scope (e.g., 'draft', 'prod', 'retro').
-    @return DBCredentials instance.
+    @return DBCredentials instance containing database access parameters.
     """
     t = target.upper()
 
@@ -170,6 +169,7 @@ def _expand_environment_variables(iterations: int = 2) -> None:
     @brief Pass through os.environ multiple times to resolve nested environment variables.
 
     @param iterations Number of times to traverse and expand environment variables.
+    @return None
     """
     for _ in range(iterations):
         for key, value in os.environ.items():
@@ -218,7 +218,7 @@ if not env_file.exists():
         )
 
 # Load global target environment file (waid.env)
-load_dotenv(dotenv_path=env_file, override=False)
+load_dotenv(dotenv_path=env_file, override=os.environ.get("WAID_ALLOW_ENV_OVERRIDE"))
 _expand_environment_variables(iterations=2)
 
 # ==============================================================================
@@ -269,6 +269,7 @@ class BaseConfig:
         @brief Validates configuration instance attributes, checking for missing or unresolved values.
 
         @param optional_fields Set of field names to ignore during validation checks.
+        @return None
         """
         missing_fields = []
         unresolved_fields = []
@@ -296,6 +297,8 @@ class BaseConfig:
     def dump(self) -> None:
         """
         @brief Log active configuration settings for debugging purposes.
+
+        @return None
         """
         class_name = self.__class__.__name__
         logger.debug(f"=== [DEBUG] {class_name} COMPLETE CONFIG ===")
@@ -369,7 +372,6 @@ class BootSettings(BaseConfig):
         """
         @brief Initializes core boot settings from environment parameters.
 
-        @param self The instance of BootSettings.
         @return None
         """
         self.waid_source_dir: Optional[Path] = self._get_path_env("WAID_SOURCE")
@@ -465,7 +467,6 @@ class WaidSettings(BaseConfig):
         """
         @brief Initializes pipeline-level settings and model features based on boot settings.
 
-        @param self The instance of WaidSettings.
         @param boot_settings The loaded bootstrap settings instance.
         @return None
         """
@@ -532,6 +533,7 @@ class WaidSettings(BaseConfig):
         self.lookback_hours: Optional[int] = self._get_int_env("WAID_LOOKBACK_HOURS", 24)
         self.fastapi_port: Optional[int] = self._get_int_env("WAID_FASTAPI_PORT", 8000)
         self.streamlit_port: Optional[int] = self._get_int_env("WAID_STREAMLIT_PORT", 8501)
+        self.streamlit_url: Optional[str] = os.getenv("WAID_STREAMLIT_URL", "https://waid-analytics.streamlit.app/")
 
         # ML Pipelines Configurations
         self.ml_matches_dir: Optional[Path] = self._get_path_env("WAID_ML_MATCHES_DIR")
@@ -563,10 +565,6 @@ class WaidSettings(BaseConfig):
         # 1. Optional backfill periods -> allow_none=True
         self.backfill_begin_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_BEGIN_PERIOD"), allow_none=True)
         self.backfill_end_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_END_PERIOD"), allow_none=True)
-
-        # 2. App period (if empty, falls back to current UTC month) -> allow_none=False
-        self.period: Optional[datetime] = validate_period(os.getenv("WAID_PERIOD"), allow_none=False)
-
         self.auto_backfill: bool = os.getenv("AUTO_BACKFILL", "false").lower() == "true"
 
         self.mock_now: Optional[datetime] = validate_mock_timestamp(os.getenv("WAID_MOCK_NOW"))
@@ -597,6 +595,8 @@ class WaidSettings(BaseConfig):
         @details 1. Validates base configuration excluding explicitly optional fields.
                     - 'mock_now' and 'backfill_period' are optional for business logic.
                  2. Performs sanity checks on station metadata and structural requirements.
+
+        @return None
         """
         super()._validate_config(optional_fields={
             "mock_now",
@@ -697,6 +697,18 @@ def validate_mock_timestamp(value: Optional[str]) -> Optional[datetime]:
         sys.exit(WaidExit.INPUT_FAIL)
 
 
+def logger_format_value(value: Any) -> str:
+    """
+    @brief Formats array-like or sequence input values into space-separated string representation.
+
+    @param value Input object containing data or numpy array-like object with flatten capability.
+    @return Space-separated string representation of values.
+    """
+    if hasattr(value, "flatten"):
+        value = value.flatten()
+    return " ".join(str(x) for x in value)
+
+
 # ==============================================================================
 # INITIALIZATION RUNTIME
 # ==============================================================================
@@ -716,7 +728,6 @@ class WaidBoot:
         """
         @brief Initializes the unified boot access wrapper.
 
-        @param self The instance of WaidBoot.
         @param boot_settings BootSettings instance.
         @param settings WaidSettings instance.
         @return None

@@ -25,6 +25,7 @@ The WAID pipeline supports two distinct execution modes depending on the operati
 * **Lab / Script Execution Mode:** <div style="margin-left: 40px;">  `waid_01_1_ingest_ecowitt`
 `waid_01_2_ingest_era5`
 `waid_01_3_profile_era5`
+</div>
 * **Purpose:** Ingests raw observational feeds from local station data (Ecowitt) and reanalysis weather sources (ERA5). Generates initial data profiling and schema validation before downstream processing.
 * **Files**: CSV / NetCDF-formatted data
 * **Tables**: None
@@ -57,10 +58,12 @@ Step 04.1 `station_metadata`
 * **Lab / Script Execution Mode:** <div style="margin-left: 40px;"> 
 `waid_05_1_ml_tensors`
 `waid_05_2_ml_train`
+`waid_05_3_ml_sanity_check`
 `waid_06_1_inference_forecast`
 `waid_06_2_inference_stats`
 `waid_06_3_dbt_inference_quality`
 `waid_06_4_inference_quality`
+</div>
 
 * **Purpose:** Formats cleaned feature tables into multi-dimensional tensors for PyTorch/ML frameworks. Trains the baseline ML model (`05_2`), executes batch inference (`06_1`), and evaluates prediction quality using both dbt models and Python scoring scripts (`06_3`, `06_4`) before generating final forecast outputs (`07_1`).
 * **Files**: <div style="margin-left: 40px;">
@@ -70,9 +73,10 @@ Step 04.1 `station_metadata`
         - `WAID_ML_OUTPUT_SCALER_PKL_FILE`
     - Step 05.2 PKL formatted data
 
-* **Tables**: <div style="margin-left: 40px;">Step 05.1 `stg_ecowitt`
+* **Tables**: <div style="margin-left: 40px;">
+Step 05.1 `stg_ecowitt`
 Step 05.2 `ml_model_registry`
-Step 06.1 `inference_records`
+Step 06.1 `inference_forecast`
 Step 06.2 `inference_stats (inference_stats.sql)`
 Step 06.3 `inference_quality (inference_quality.sql)`
 Step 06.4 `inference_quality`
@@ -260,6 +264,15 @@ Machine learning training pipeline designed for local weather nowcasting. It ing
 
 The pipeline combines memory-efficient training, physics-informed feature engineering, automated MLOps tracking, and retraining guardrails to provide reproducible and controlled model updates.
 
+### `waid_05_3_ml_sanity_check`
+
+Serves as the automated Machine Learning Validation Gate and Coherence Guardrail within the WAID pipeline. It performs automated pre-inference structural checks by inspecting serialized raw tensors, Scikit-Learn input scalers, and Keras deep learning model architectures directly on disk. Its primary role is to enforce physical and dimensional alignment across all training and inference components, preventing broken schemas or feature order mismatches from reaching production deployments.
+
+- Tensor Integrity Verification: Scans and loads raw 3D tensor files (X_raw_*.pkl) across monthly periods, confirming shape dimensions, feature counts, and sample alignment with companion target (Y_raw) and timestamp files.
+- Schema & Feature Alignment: Reconstructs implicit training feature order and compares it against inference configuration using semantic equivalences to detect column order mismatches.
+- Scaler & Model Metadata Inspection: Validates feature dimension expectations from serialized Scikit-Learn input scalers and Keras models (with an h5py fallback parser for metadata inspection).
+- Automated Guardrail Gate: Evaluates four strict validation rules before deployment, failing gracefully with standardized WaidExit codes if structural or dimensional mismatches occur.
+
 ### `waid_06_1_inference_forecast.py`
 
 Live inference engine for the WAID machine learning system. It reads recent station observations, constructs normalized feature tensors, generates multi-step forecasts with the trained LSTM model, applies physical safety constraints, and persists predictions and reconciliation metrics to SQLite. It manages:
@@ -376,9 +389,9 @@ df_clean = fetch_and_resample_ecowitt(
 timestamps = df_clean["timestamp"].values
 solar_theoretical = calculate_theoretical_solar_radiation(
     timestamps=timestamps,
+    input_tz="UTC",
     lat=env.ecowitt_latitude,
     lon=env.ecowitt_longitude,
-    local_tz=env.tz_timezone
 )
 
 # 5. Apply physical guardrails and sensor deadbands to single features
@@ -462,7 +475,7 @@ dbt source configuration file that registers and documents external raw database
 
 - Raw Ecowitt weather observations from external_raw.ecowitt_records, including temperature, humidity, pressure, wind, and rain sensor measurements.
 - Synchronized Ecowitt and ERA5 observations from external_raw.match_records, providing paired hourly ground-truth and reanalysis metrics.
-- Individual ML inference runs from external_raw.inference_records, including emission timestamps, active time windows, and model version metadata.
+- Individual ML inference runs from external_raw.inference_forecast, including emission timestamps, active time windows, and model version metadata.
 - Forecast outputs from external_raw.inference_forecast, including target forecast timestamps and associated model versions.
 - Explicit column data types using standard types such as INTEGER, REAL, TEXT, and DATETIME.
 - Data integrity checks through dbt not_null tests on critical fields such as timestamp and model_version.
