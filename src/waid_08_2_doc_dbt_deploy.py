@@ -159,7 +159,7 @@ def extract_and_generate_markdown(manifest_path: Path, output_file: Path, projec
         sqlite_markdown = extract_sqlite_schemas(project_root)
         f.write(sqlite_markdown)
                 
-    logger.info(f"✅ Comprehensive Markdown documentation successfully generated: {output_file}")
+    logger.info(f"Comprehensive Markdown documentation successfully generated: {output_file}")
 
 
 def check_and_complete() -> None: 

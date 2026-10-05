@@ -221,7 +221,7 @@ def ensure_prefect_server(port: int = 4200, timeout: int = 5) -> bool:
     
     while time.time() - start_time < max_wait:
         if server_process.poll() is not None:
-            logger.error(f"❌ Prefect process terminated with code {server_process.returncode}.")
+            logger.error(f"Prefect process terminated with code {server_process.returncode}.")
             return False
             
         try:
@@ -232,7 +232,7 @@ def ensure_prefect_server(port: int = 4200, timeout: int = 5) -> bool:
         except httpx.RequestError:
             time.sleep(1)
             
-    logger.error(f"❌ Timeout ({max_wait}s) reached. Unable to connect to {api_url}.")
+    logger.error(f" Timeout ({max_wait}s) reached. Unable to connect to {api_url}.")
     return False
 
 
@@ -285,10 +285,10 @@ def main():
     @brief Main entry point for the Prefect workflow lifecycle manager.
     """
     logger.info("Initializing WAID Prefect Manager...")
- 
+
     # Initialize environment configuration
     env = WaidBoot()
-       
+
     # Parse CLI arguments
     parsed_args, extra_args = parse_arguments(env)
     

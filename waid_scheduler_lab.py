@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from loguru import logger
+from urllib.parse import urljoin
 
 if not os.environ.get("WAID_SOURCE"):
     sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
@@ -89,28 +90,37 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
 
 def ping_streamlit(env: WaidBoot, timeout: int = 15) -> None:
     """
-    @brief Sends an HTTP GET request to keep the remote Streamlit web app active during pipeline execution cycles.
+    @brief Sends HTTP GET requests to Streamlit endpoints (_stcore/health and main URL) to maintain app activity.
     @param env WaidBoot configuration instance containing the target Streamlit URL.
     @param timeout HTTP request timeout in seconds (default is 15 seconds).
     @return None
     """
-    url = env.streamlit_url
+    base_url = env.streamlit_url
+    health_url = urljoin(base_url if base_url.endswith("/") else f"{base_url}/", "_stcore/health")
+    
     logger.info(
-        f"Keep-alive ping for Streamlit ({url}) with a timeout of {timeout} seconds..."
+        f"Keep-alive ping for Streamlit ({base_url}) with a timeout of {timeout} seconds..."
     )
 
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Cache-Control": "no-cache",
     }
 
     try:
         with requests.Session() as session:
-            response = session.get(url, headers=headers, timeout=timeout)
+            # 1. Ping primary entrypoint
+            res_main = session.get(base_url, headers=headers, timeout=timeout)
+            
+            # 2. Ping internal healthcheck endpoint
+            res_health = session.get(health_url, headers=headers, timeout=timeout)
+            
             logger.info(
-                f"[Keep-Alive] Streamlit ping successful! Status code: {response.status_code}"
+                f"[Keep-Alive] Streamlit ping successful! Main: {res_main.status_code}, Health: {res_health.status_code}"
             )
     except Exception as e:
         logger.error(f"[Keep-Alive] Error during Streamlit ping: {e}")
@@ -351,8 +361,7 @@ def main() -> int:
 
             logger.info("Triggering scheduled incremental WAID pipeline run...")
             try:
-                extra_passthrough = ["--skip-ingestion-ml-deploy"]
-                code = run_pipeline("incremental", extra_args=extra_passthrough)
+                code = run_pipeline("incremental")
                 if code == 0:
                     logger.success(
                         "Scheduled incremental run completed successfully."

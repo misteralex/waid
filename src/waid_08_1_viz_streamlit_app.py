@@ -624,7 +624,7 @@ def run_dashboard(env: WaidBoot) -> None:
             f"**ERA5 Status:** Ground truth ERA5 data available for selected day `{selected_date}`."
         )
     else:
-        st.sidebar.warning("⚠️ No ERA5 ground truth data currently available for this day.")
+        st.sidebar.warning("No ERA5 ground truth data currently available for this day.")
 
     st.markdown(f"### Operational Analysis for Target Date: **{selected_date}**")
 

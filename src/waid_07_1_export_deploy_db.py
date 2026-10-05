@@ -49,6 +49,7 @@ def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
     )
     
     try:
+        logger.debug(f"Creating SQLAlchemy engine for target schema: {schema_name}")
         engine = create_engine(supabase_url, poolclass=NullPool)
         
         # Format datetimes & replace NaN/NaT with None for SQL NULL compatibility
@@ -56,10 +57,12 @@ def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
         for col in df_supabase.select_dtypes(include=['datetime', 'datetime64']).columns:
             df_supabase[col] = df_supabase[col].dt.strftime('%Y-%m-%d %H:%M:%S')
         
+        logger.debug(f"Converting DataFrame to dictionary records (Total rows: {len(df_supabase)})...")
         records = df_supabase.where(pd.notnull(df_supabase), None).to_dict(orient="records")
         
         with engine.connect() as conn:
             # 1. Ensure target schema and table with composite primary key exist
+            logger.debug(f"Ensuring schema {schema_name} and table public_forecasts exist...")
             conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name};"))
             
             conn.execute(text(f"""
@@ -123,9 +126,11 @@ def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
                 DO UPDATE SET {set_clause};
             """)
 
+            logger.debug(f"Executing UPSERT query for {len(records)} records...")
             conn.execute(upsert_query, records)
             
             # 3. Create composite index for query performance
+            logger.debug("Ensuring composite index exists...")
             conn.execute(
                 text(f"CREATE INDEX IF NOT EXISTS idx_public_forecasts_ts_model ON {schema_name}.public_forecasts (timestamp, model_version)")
             )

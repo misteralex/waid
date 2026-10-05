@@ -420,7 +420,7 @@ def waid_main_flow(
             )
 
             logger.info(
-                f"🚀 Starting historical AUTO-BACKFILL from {start_period} to {end_period} (Steps 01-03)..."
+                f"Starting historical AUTO-BACKFILL from {start_period} to {end_period} (Steps 01-03)..."
             )
             periods = generate_period_range(start_period, end_period)
 
@@ -439,7 +439,7 @@ def waid_main_flow(
                     logger.error(f"Error during data preparation for period {p}")
                     return exit_code
 
-            logger.info("✅ BACKFILL completed successfully. Database populated.")
+            logger.info("BACKFILL completed successfully. Database populated.")
             return 0
 
         # ======================================================================
@@ -449,7 +449,7 @@ def waid_main_flow(
         period_args = ["--period", period_val]
         exit_code = 0
 
-        logger.info(f"🚀 Starting standard execution for period: {period_val}")
+        logger.info(f"Starting standard execution for period: {period_val}")
 
         if not should_skip_ingestion:
             exit_code = data_ingestion_flow(env, period_args)
@@ -491,6 +491,6 @@ if __name__ == "__main__":
 
         except Exception:
             logger.exception(
-                "❌ Critical unhandled error during Prefect orchestrator execution."
+                " Critical unhandled error during Prefect orchestrator execution."
             )
             sys.exit(WaidExit.INTERNAL_ERROR)

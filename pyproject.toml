@@ -18,3 +18,23 @@ requires-python = ">=3.10"
 dependencies = [
     "loguru",
 ]
+
+[tool.ruff]
+line-length = 150
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # Pycodestyle errors
+    "W",   # Pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # Isort (import sorting)
+    "D",   # Pydocstyle (docstring conventions)
+]
+ignore = [
+    "D100", # Missing docstring in public module (handled by custom WAID header check)
+    "D104", # Missing docstring in public package
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google" # O "sphinx" se preferisci mappare i tag standard

@@ -97,7 +97,7 @@ class PipelineRunner:
         self, command: list[str], is_dbt: bool = False, period: str = None
     ) -> int:
         """
-        @brief Executes a subprocess command while capturing and standardizing its output logs.
+        @brief Executes a subprocess command while streaming its raw output directly to stdout.
         @param command List representing the command and its arguments.
         @param is_dbt Boolean flag indicating if the command is a dbt operation.
         @param period Optional operational period string (YYYY-MM).
@@ -155,42 +155,11 @@ class PipelineRunner:
             env=proc_env,
         )
 
-        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-        for line in process.stdout:
-            clean_line = line.strip()
-            raw_line = ansi_escape.sub("", clean_line)
-
-            if (
-                "cudart_stub.cc" in raw_line
-                or "Could not find cuda drivers" in raw_line
-            ):
-                continue
-
-            target_level = "INFO"
-
-            for lvl in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
-                if lvl in raw_line:
-                    target_level = lvl
-                    break
-
-            if is_dbt and target_level in ["ERROR", "CRITICAL"]:
-                if "TOTAL=" in raw_line or "PASS=" in raw_line:
-                    target_level = "INFO"
-
-            if " | " in raw_line and not raw_line.startswith("|"):
-                message = raw_line.split(" | ")[-1].strip()
-            else:
-                message = raw_line
-
-            if "[PASS" in raw_line:
-                logger.success(message)
-            elif "cuda_platform" in raw_line:
-                logger.info(message)
-            elif "[ERROR" in raw_line or "FAIL" in raw_line:
-                logger.error(message)
-            else:
-                logger.log(target_level, message)
+        # STREAM PASSTHROUGH: Direct forwarding of stdout without string alterations or splitting on '|'
+        if process.stdout:
+            for line in iter(process.stdout.readline, ""):
+                sys.stdout.write(line)
+                sys.stdout.flush()
 
         process.wait()
 
@@ -252,7 +221,6 @@ def ensure_dbt_setup(runner: PipelineRunner) -> int:
     """
     @brief Ensures dbt dependencies and target manifest are properly compiled before execution.
     @details Triggered when starting execution from an intermediate step or skipping main setup.
-
     @param runner PipelineRunner instance to execute dbt setup operations.
     @return Return code integer (0 on success).
     """
@@ -278,7 +246,12 @@ def ensure_dbt_setup(runner: PipelineRunner) -> int:
 # ==============================================================================
 
 def waid_mock_update_ecowitt(runner: PipelineRunner, args: list) -> int:
-    """@brief Generates mock Ecowitt observations in simulation mode."""
+    """
+    @brief Generates mock Ecowitt observations in simulation mode.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     cmd_args = list(args)
     if runner.mock_now and "--mock-now" not in cmd_args:
         cmd_args.extend(["--mock-now", runner.mock_now])
@@ -289,33 +262,56 @@ def waid_mock_update_ecowitt(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_01_1_ingest_ecowitt(runner: PipelineRunner, args: list) -> int:
-    """@brief Ingests raw observation records from Ecowitt API/sources."""
+    """
+    @brief Ingests raw observation records from Ecowitt API/sources.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_01_1_ingest_ecowitt.py"), *args]
     )
 
 
 def waid_01_2_ingest_era5(runner: PipelineRunner, args: list) -> int:
-    """@brief Ingests ERA5 reanalysis weather data."""
+    """
+    @brief Ingests ERA5 reanalysis weather data.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_01_2_ingest_era5.py"), *args]
     )
 
 
 def waid_01_3_profile_era5(runner: PipelineRunner, args: list) -> int:
-    """@brief Profiles ERA5 datasets for quality and metric thresholds."""
+    """
+    @brief Profiles ERA5 datasets for quality and metric thresholds.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_01_3_profile_era5.py"), *args]
     )
 
 
 def waid_02_0_dbt_clean(runner: PipelineRunner) -> int:
-    """@brief Cleans dbt target directory and dependencies."""
+    """
+    @brief Cleans dbt target directory and dependencies.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(["dbt", "clean"] + runner.get_dbt_base_args(), is_dbt=True)
 
 
 def waid_02_0_dbt_deps(runner: PipelineRunner) -> int:
-    """@brief Downloads external dbt packages if not present locally."""
+    """
+    @brief Downloads external dbt packages if not present locally.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     packages_dir = Path("dbt_packages/dbt_utils")
     if packages_dir.exists():
         logger.info("dbt dependencies already present locally. Skipping download.")
@@ -325,12 +321,20 @@ def waid_02_0_dbt_deps(runner: PipelineRunner) -> int:
 
 
 def waid_02_0_dbt_compile(runner: PipelineRunner) -> int:
-    """@brief Compiles dbt models into SQL executable files."""
+    """
+    @brief Compiles dbt models into SQL executable files.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(["dbt", "compile"] + runner.get_dbt_base_args(), is_dbt=True)
 
 
 def waid_02_0_dbt_dump_vars(runner: PipelineRunner) -> int:
-    """@brief Dumps current dbt execution parameters and variables."""
+    """
+    @brief Dumps current dbt execution parameters and variables.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["dbt", "run-operation", "dump_vars"] + runner.get_dbt_base_args(),
         is_dbt=True,
@@ -338,14 +342,24 @@ def waid_02_0_dbt_dump_vars(runner: PipelineRunner) -> int:
 
 
 def waid_02_1_sync_ecowitt(runner: PipelineRunner, args: list) -> int:
-    """@brief Synchronizes Ecowitt observations into staging storage."""
+    """
+    @brief Synchronizes Ecowitt observations into staging storage.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_02_1_sync_ecowitt.py"), *args]
     )
 
 
 def waid_02_2_dbt_staging_ecowitt(runner: PipelineRunner, args: list) -> int:
-    """@brief Executes and tests dbt staging models for Ecowitt."""
+    """
+    @brief Executes and tests dbt staging models for Ecowitt.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     period_val = args[args.index("--period") + 1] if "--period" in args else None
 
     code = runner.run_command(
@@ -364,14 +378,24 @@ def waid_02_2_dbt_staging_ecowitt(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_03_1_match_datasets(runner: PipelineRunner, args: list) -> int:
-    """@brief Matches and aligns station observations with ERA5 grid data."""
+    """
+    @brief Matches and aligns station observations with ERA5 grid data.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_03_1_match_datasets.py"), *args]
     )
 
 
 def waid_03_2_dbt_matches(runner: PipelineRunner, args: list) -> int:
-    """@brief Runs and tests matched datasets in dbt."""
+    """
+    @brief Runs and tests matched datasets in dbt.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     period_val = args[args.index("--period") + 1] if "--period" in args else None
 
     code = runner.run_command(
@@ -390,7 +414,12 @@ def waid_03_2_dbt_matches(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_03_3_dbt_matches_bias(runner: PipelineRunner, args: list) -> int:
-    """@brief Computes observation vs model bias metrics via dbt."""
+    """
+    @brief Computes observation vs model bias metrics via dbt.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     period_val = args[args.index("--period") + 1] if "--period" in args else None
 
     code = runner.run_command(
@@ -409,14 +438,24 @@ def waid_03_3_dbt_matches_bias(runner: PipelineRunner, args: list) -> int:
 
 
 def debug_waid_analyze_bias(runner: PipelineRunner, args: list) -> int:
-    """@brief Debug utility step to analyze dataset bias distributions."""
+    """
+    @brief Debug utility step to analyze dataset bias distributions.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "utils/waid_analyze_bias.py"), *args]
     )
 
 
 def waid_04_1_setup_metadata(runner: PipelineRunner, args: list) -> int:
-    """@brief Builds station metadata tables and generates feature specs."""
+    """
+    @brief Builds station metadata tables and generates feature specs.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     code = runner.run_command(
         ["dbt", "run", "--select", "station_metadata", "--full-refresh"] + runner.get_dbt_base_args(),
         is_dbt=True,
@@ -430,28 +469,46 @@ def waid_04_1_setup_metadata(runner: PipelineRunner, args: list) -> int:
 
     
 def waid_05_1_ml_tensors(runner: PipelineRunner, args: list) -> int:
-    """@brief Prepares training and evaluation tensor datasets for ML models."""
+    """
+    @brief Prepares training and evaluation tensor datasets for ML models.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_05_1_ml_tensors.py"), *args]
     )
 
 
 def waid_05_2_ml_train(runner: PipelineRunner) -> int:
-    """@brief Trains machine learning model architectures."""
+    """
+    @brief Trains machine learning model architectures.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_05_2_ml_train.py")]
     )
 
 
 def waid_05_3_ml_sanity_check(runner: PipelineRunner) -> int:
-    """@brief Conducts sanity checks and evaluation on trained ML model weights."""
+    """
+    @brief Conducts sanity checks and evaluation on trained ML model weights.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "waid_05_3_ml_sanity_check.py")]
     )
 
 
 def waid_06_1_inference_forecast(runner: PipelineRunner, args: list) -> int:
-    """@brief Generates model inferences and forecast predictions."""
+    """
+    @brief Generates model inferences and forecast predictions.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     cmd = [
         "python",
         str(runner.env.tools_dir / "waid_06_1_inference_forecast.py"),
@@ -464,7 +521,11 @@ def waid_06_1_inference_forecast(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_06_2_inference_stats(runner: PipelineRunner) -> int:
-    """@brief Calculates statistical metrics for generated forecast inferences."""
+    """
+    @brief Calculates statistical metrics for generated forecast inferences.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["dbt", "run", "--select", "inference_stats"] + runner.get_dbt_base_args(),
         is_dbt=True,
@@ -472,7 +533,11 @@ def waid_06_2_inference_stats(runner: PipelineRunner) -> int:
 
 
 def waid_06_3_dbt_inference_quality(runner: PipelineRunner) -> int:
-    """@brief Evaluates forecast inference quality via dbt models."""
+    """
+    @brief Evaluates forecast inference quality via dbt models.
+    @param runner PipelineRunner instance to execute commands.
+    @return Process return code integer.
+    """
     return runner.run_command(
         ["dbt", "run", "--select", "+inference_quality", "--full-refresh"] + runner.get_dbt_base_args(),
         is_dbt=True,
@@ -480,7 +545,12 @@ def waid_06_3_dbt_inference_quality(runner: PipelineRunner) -> int:
 
 
 def waid_06_4_inference_quality(runner: PipelineRunner, args: list) -> int:
-    """@brief Analyzes inference quality metrics and exports evaluation reports."""
+    """
+    @brief Analyzes inference quality metrics and exports evaluation reports.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     cmd = [
         "python",
         str(runner.env.tools_dir / "waid_06_4_inference_quality.py"),
@@ -492,7 +562,12 @@ def waid_06_4_inference_quality(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_07_1_export_deploy_db(runner: PipelineRunner, args: list) -> int:
-    """@brief Exports clean deployment database artifacts."""
+    """
+    @brief Exports clean deployment database artifacts.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     cmd = [
         "python",
         str(runner.env.tools_dir / "waid_07_1_export_deploy_db.py"),
@@ -504,7 +579,12 @@ def waid_07_1_export_deploy_db(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_08_1_viz_streamlit_app(runner: PipelineRunner, args: list) -> int:
-    """@brief Launches or deploys Streamlit visualization dashboard."""
+    """
+    @brief Launches or deploys Streamlit visualization dashboard.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     cmd = [
         "python",
         str(runner.env.tools_dir / "waid_08_1_viz_streamlit_app.py"),
@@ -514,7 +594,12 @@ def waid_08_1_viz_streamlit_app(runner: PipelineRunner, args: list) -> int:
 
 
 def waid_08_2_doc_dbt_deploy(runner: PipelineRunner, args: list) -> int:
-    """@brief Deploys updated dbt documentation artifacts."""
+    """
+    @brief Deploys updated dbt documentation artifacts.
+    @param runner PipelineRunner instance to execute commands.
+    @param args List of additional command-line arguments.
+    @return Process return code integer.
+    """
     cmd = [
         "python",
         str(runner.env.tools_dir / "waid_08_2_doc_dbt_deploy.py"),
@@ -834,6 +919,10 @@ def main() -> int:
     # 2. Core Preparation & Transformation Stage
     if not parsed_args.skip_ingestion_ml_deploy:
         master_steps.extend([
+            waid_02_0_dbt_clean,
+            waid_02_0_dbt_deps,
+            waid_02_0_dbt_compile,
+            waid_02_0_dbt_dump_vars,
             waid_02_1_sync_ecowitt,
             waid_02_2_dbt_staging_ecowitt,
             waid_03_1_match_datasets,

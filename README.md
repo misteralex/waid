@@ -23,7 +23,7 @@ The live demonstration and operational dashboard of the WAID framework is hosted
 
 ---
 
-## 🚀 Deployment Overview
+## Deployment Overview
 
   * **OPERATIONAL NOWCASTING**
     - Live prediction interface
@@ -87,7 +87,7 @@ The theoretical solar-radiation signal is generated at inference time from astro
 
 ---
 
-## 🚀 Deployment & Data Routing Architecture
+## Deployment & Data Routing Architecture
 
 The WAID platform supports flexible deployment options across different environments and storage backends, seamlessly routing between local offline databases and cloud-hosted data warehouses.
 
@@ -218,7 +218,7 @@ The framework relies heavily on predefined environment variables to manage root 
 
 ---
 
-## 🚀 Scheduling & Orchestration Guide
+## Scheduling & Orchestration Guide
 
 ### 1. Continuous Operational Scheduling (`waid_scheduler_lab.py`)
 The scheduler operates as a long-running operational service or manages retroactive simulations step-by-step. 

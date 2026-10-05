@@ -326,7 +326,7 @@ The `WAID_DEPLOY_MODE` variable determines the backend data source queried by th
 
 ---
 
-## 🚀 Live Operational Dashboard
+## Live Operational Dashboard
 
 The live demonstration and operational dashboard of the WAID framework is hosted on Streamlit Cloud:
 

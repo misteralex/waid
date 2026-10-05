@@ -37,5 +37,9 @@ services:
       # Bind-mount dbt sources from host for live development
       - ${WAID_SOURCE}/dbt:/app/dbt
 
+      # Bind-mount for live hot-reloading
+      - ${WAID_SOURCE}/waid_scheduler_lab.py:/app/waid_scheduler_lab.py
+      - ${WAID_SOURCE}/waid_orchestrate_lab.py:/app/waid_orchestrate_lab.py
+
     entrypoint: ["/bin/bash", "/app/docker/entrypoint.sh"]
     command: ["python", "/app/waid_scheduler_lab.py"]

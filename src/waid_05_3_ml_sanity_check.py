@@ -164,9 +164,9 @@ def validate_pipeline_alignment(env: WaidBoot) -> int:
         is_match = (tr_col == inf_col) or (SEMANTIC_EQUIVALENCES.get(tr_col) == inf_col)
         
         if is_match:
-            status = "🟢 MATCH"
+            status = "MATCH"
         else:
-            status = "🔴 MISMATCH"
+            status = "MISMATCH"
             order_mismatches += 1
             
         logger.info(f"{i:<6} | {tr_col:<25} | {inf_col:<25} | {status}")
