@@ -19,8 +19,8 @@ Inspection of the inference script (`waid_06_1_inference_forecast.py`) revealed 
 
 <pre>
 <code># Original Naive Timestamp Handling (V1 Bug)
-if env.mock_now:
-    last_dt = pd.to_datetime(env.mock_now).floor('h')
+if env.retro_now:
+    last_dt = pd.to_datetime(env.retro_now).floor('h')
 else:
     last_dt = pd.to_datetime(recent_timestamps[-1]).floor('h')
     
@@ -38,8 +38,8 @@ To establish a single source of truth across ingestion, tensor building, and inf
 
 <pre>
 <code># Corrected UTC Timestamp Normalization (V2 Fix)
-if env.mock_now:
-    last_dt = pd.to_datetime(env.mock_now).floor('h')
+if env.retro_now:
+    last_dt = pd.to_datetime(env.retro_now).floor('h')
 else:
     last_dt = pd.to_datetime(recent_timestamps[-1]).floor('h')
     

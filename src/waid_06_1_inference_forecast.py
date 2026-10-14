@@ -58,11 +58,11 @@ def load_active_model_artifacts(env: WaidBoot) -> Tuple[Any, Any, Any]:
     import tensorflow as tf
 
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT model_path, x_scaler_path, y_scaler_path 
-                FROM ml_model_registry 
+                FROM {env.db.ml_model_registry} 
                 WHERE station_id = ? AND is_active = 1 
                 LIMIT 1
             """, (env.ecowitt_station_id,))
@@ -104,8 +104,8 @@ def fetch_recent_telemetry(env: WaidBoot) -> pd.DataFrame:
     @raises WError If telemetry data is insufficient or fetching fails.
     """
     try:
-        if env.mock_now:
-            end_dt = pd.to_datetime(env.mock_now)
+        if env.retro_now:
+            end_dt = pd.to_datetime(env.retro_now)
         else:
             end_dt = datetime.now(timezone.utc)
             
@@ -225,19 +225,18 @@ def build_inference_tensor(env: WaidBoot, df_raw: pd.DataFrame) -> np.ndarray:
     return np.expand_dims(input_data, axis=0)
 
 
-def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: WaidBoot) -> None:
+def run_dynamic_reconciliation(env: WaidBoot, cursor: sqlite3.Cursor, model_version: str) -> None:
     """Reconciles pending forecast predictions against actual weather station observations.
-
+    @param env WaidBoot application context instance.
     @param cursor SQLite database cursor.
     @param model_version Active model version string key.
-    @param env WaidBoot application context instance.
     @return None
     """
     logger.info("Starting dynamic reconciliation for all pending records with missing diffs...")
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT timestamp 
-        FROM inference_forecast 
+        FROM {env.db.inference_forecast} 
         WHERE (
             actual_temp IS NULL OR actual_rh IS NULL OR actual_pres IS NULL OR
             actual_wind IS NULL OR actual_solar IS NULL OR actual_rain IS NULL OR
@@ -253,10 +252,10 @@ def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: 
     for row in pending_rows:
         ts = row[0]
         
-        # 1. Fetch real observation from match_records
-        cursor.execute("""
+        # 1. Fetch real observation from match records table
+        cursor.execute(f"""
             SELECT timestamp, temp_eco, pres_eco, rh_eco, wind_eco, solar_eco, rain_eco 
-            FROM match_records 
+            FROM {env.db.match_records} 
             WHERE timestamp = ?
         """, (ts,))
         actual_row = cursor.fetchone()
@@ -267,10 +266,10 @@ def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: 
         
         _, a_temp, a_pres, a_rh, a_wind, a_solar, a_rain = actual_row
         
-        # 2. Fetch corresponding prediction from inference_forecast
-        cursor.execute("""
+        # 2. Fetch corresponding prediction from inference forecast table
+        cursor.execute(f"""
             SELECT pred_temp, pred_rh, pred_pres, pred_wind, pred_solar, pred_rain 
-            FROM inference_forecast 
+            FROM {env.db.inference_forecast} 
             WHERE timestamp = ? AND model_version = ?
         """, (ts, model_version))
         pred_row = cursor.fetchone()
@@ -281,9 +280,9 @@ def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: 
         p_temp, p_rh, p_pres, p_wind, p_solar, p_rain = pred_row
 
         # 3. Fetch historical bias
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT bias_temp, bias_pres, bias_rh, bias_wind, bias_solar, bias_rain 
-            FROM int_matches_bias WHERE timestamp = ?
+            FROM {env.db.int_matches_bias} WHERE timestamp = ?
         """, (ts,))
         bias_row = cursor.fetchone()
 
@@ -311,8 +310,8 @@ def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: 
         drift_rain  = (diff_rain  - b_rain)  if diff_rain  is not None else None
 
         # 6. Save reconciled record
-        cursor.execute("""
-            UPDATE inference_forecast 
+        cursor.execute(f"""
+            UPDATE {env.db.inference_forecast} 
             SET diff_temp = ?, diff_rh = ?, diff_pres = ?, diff_wind = ?, diff_solar = ?, diff_rain = ?,
                 historical_bias_temp = ?, historical_bias_rh = ?, historical_bias_pres = ?, 
                 historical_bias_wind = ?, historical_bias_solar = ?, historical_bias_rain = ?,
@@ -329,14 +328,14 @@ def run_dynamic_reconciliation(cursor: sqlite3.Cursor, model_version: str, env: 
         ))
 
 
-def ensure_inference_forecast_table(cursor: sqlite3.Cursor) -> None:
-    """Ensures the inference_forecast table exists and contains all required schema columns.
+def ensure_inference_forecast_table(inference_table: str, cursor: sqlite3.Cursor) -> None:
+    """Ensures the inference forecast table exists and contains all required schema columns.
 
     @param cursor SQLite database connection cursor.
     @return None
     """
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS inference_forecast(
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {inference_table} (
             timestamp TEXT,
             model_version TEXT,
             created_at TEXT,
@@ -356,7 +355,7 @@ def ensure_inference_forecast_table(cursor: sqlite3.Cursor) -> None:
         )
     """)
 
-    cursor.execute("PRAGMA table_info(inference_forecast)")
+    cursor.execute(f"PRAGMA table_info({inference_table})")
     existing_columns = [col[1] for col in cursor.fetchall()]
     
     required_columns = {
@@ -375,7 +374,7 @@ def ensure_inference_forecast_table(cursor: sqlite3.Cursor) -> None:
     
     for col_name, col_type in required_columns.items():
         if col_name not in existing_columns:
-            cursor.execute(f"ALTER TABLE inference_forecast ADD COLUMN {col_name} {col_type}")
+            cursor.execute(f"ALTER TABLE {inference_table} ADD COLUMN {col_name} {col_type}")
 
 
 def persist_and_update_inference_forecast(
@@ -386,7 +385,7 @@ def persist_and_update_inference_forecast(
     window_start: str,
     window_stop: str
 ) -> None:
-    """Persists physics-safe predictions to the permanent inference_forecast table and triggers reconciliation.
+    """Persists physics-safe predictions to the permanent inference forecast table and triggers reconciliation.
 
     @param env WaidBoot application context instance.
     @param future_timestamps List of future target UTC timestamps.
@@ -398,12 +397,12 @@ def persist_and_update_inference_forecast(
     @raises WError If database update fails.
     """
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
-            ensure_inference_forecast_table(cursor)
+            ensure_inference_forecast_table(env.db.inference_forecast, cursor)
 
-            if env.mock_now:
-                created_at = str(env.mock_now)
+            if env.retro_now:
+                created_at = str(env.retro_now)
             else:
                 created_at = datetime.now(timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -414,15 +413,15 @@ def persist_and_update_inference_forecast(
             for i, timestamp in enumerate(future_timestamps):
                 p_temp, p_rh, p_pres, p_wind, p_solar, p_rain = preds[i]
                 
-                cursor.execute("""
-                    SELECT timestamp FROM inference_forecast 
+                cursor.execute(f"""
+                    SELECT timestamp FROM {env.db.inference_forecast} 
                     WHERE timestamp = ? AND model_version = ?
                 """, (timestamp, model_version))
                 row = cursor.fetchone()
                 
                 if not row:
-                    cursor.execute("""
-                        INSERT INTO inference_forecast (
+                    cursor.execute(f"""
+                        INSERT INTO {env.db.inference_forecast} (
                             timestamp, model_version,
                             created_at, ts_window_start, ts_window_stop,
                             pred_temp, pred_rh, pred_pres, pred_wind, pred_rain, pred_solar
@@ -434,8 +433,8 @@ def persist_and_update_inference_forecast(
                         float(p_wind), float(p_rain), float(p_solar)
                     ))
                 else:
-                    cursor.execute("""
-                        UPDATE inference_forecast 
+                    cursor.execute(f"""
+                        UPDATE {env.db.inference_forecast} 
                         SET created_at = ?, ts_window_start = ?, ts_window_stop = ?,
                             pred_temp = ?, pred_rh = ?, pred_pres = ?, 
                             pred_wind = ?, pred_rain = ?, pred_solar = ?
@@ -447,10 +446,10 @@ def persist_and_update_inference_forecast(
                         timestamp, model_version
                     ))
 
-            run_dynamic_reconciliation(cursor, model_version, env)
+            run_dynamic_reconciliation(env, cursor, model_version)
             conn.commit()
 
-        logger.success("Permanent inference_forecast table successfully updated.")
+        logger.success("Permanent inference forecast table successfully updated.")
     except sqlite3.Error as e:
         raise WError(f"Failed to update inference forecast table: {e}", code=WaidExit.DATA_FAIL)
 
@@ -462,14 +461,14 @@ def main() -> int:
     """
     try:
         parser = argparse.ArgumentParser(description="WAID Inference Engine")
-        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        parser.add_argument("--retro-now", type=str, default=None, help="Simulated current timestamp")
         args, _ = parser.parse_known_args()
         
         env = WaidBoot()
         
-        if args.mock_now:
-            env.mock_now = validate_mock_timestamp(args.mock_now)
-            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+        if args.retro_now:
+            env.retro_now = validate_mock_timestamp(args.retro_now)
+            logger.info(f"Overriding retro_now with CLI argument: {env.retro_now}")
         
         df_raw = fetch_recent_telemetry(env)
 
@@ -535,8 +534,8 @@ def main() -> int:
         logger.debug("preds_absolute = {}", logger_format_value(preds_absolute))
 
         # Normalize the last telemetry timestamp ensuring conversion to UTC
-        if env.mock_now:
-            last_dt = pd.to_datetime(env.mock_now)
+        if env.retro_now:
+            last_dt = pd.to_datetime(env.retro_now)
         else:
             last_dt = pd.to_datetime(recent_timestamps[-1])
 

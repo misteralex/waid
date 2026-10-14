@@ -163,7 +163,7 @@ def main() -> int:
             parser.print_help()
             logger.error("You must specify a valid input")
             return env.waid_exit.INPUT_FAIL
- 
+
         args = parser.parse_args()
         code = download_ecowitt_data(env, args)
 

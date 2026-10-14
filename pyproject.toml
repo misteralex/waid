@@ -38,3 +38,12 @@ ignore = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "google" # O "sphinx" se preferisci mappare i tag standard
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+norecursedirs = ["src", "build", "dist", ".git", ".venv"]
+filterwarnings = [
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+    "ignore::pydantic.warnings.ArbitraryTypeWarning",
+]

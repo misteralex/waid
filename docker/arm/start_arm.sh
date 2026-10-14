@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ##
-# @file start-arm.sh
+# @file start_arm.sh
 # @brief Bootstrapping and volume permission initialization script for WAID pipeline on ARM architecture.
 # @details Resolves runtime UID/GID variables, verifies host directory structure for Docker bind mounts, 
 #          launches Docker Compose services, and aligns dbt workspace execution permissions.

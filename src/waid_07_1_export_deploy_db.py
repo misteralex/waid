@@ -150,19 +150,19 @@ def main() -> int:
     """
     try:
         parser = argparse.ArgumentParser(description="WAID Inference Engine & DB Exporter")
-        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        parser.add_argument("--retro-now", type=str, default=None, help="Simulated current timestamp")
         args, _ = parser.parse_known_args()
         
         env = WaidBoot()
         
-        if args.mock_now:
-            env.mock_now = validate_mock_timestamp(args.mock_now)
-            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+        if args.retro_now:
+            env.retro_now = validate_mock_timestamp(args.retro_now)
+            logger.info(f"Overriding retro_now with CLI argument: {env.retro_now}")
         
         logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
         logger.info(f"🔶 DB Target   : {env.db_schema_target}")
             
-        waid_db_dir = Path(env.waid_db)
+        waid_db_dir = Path(env.waid_db_file)
 
         # Resolve public db path with strict check
         if hasattr(env, 'deploy_db_file') and env.waid_data_dir:
@@ -181,7 +181,7 @@ def main() -> int:
     logger.info(f"Connecting to lab database: {waid_db_dir}")
     
     # Updated the query to correctly handle the composite key (timestamp, model_version)
-    query = """
+    query = f"""
         SELECT
             t.timestamp,
             t.created_at,
@@ -229,8 +229,8 @@ def main() -> int:
             q.abs_error_rain,
             q.abs_error_solar
 
-        FROM inference_forecast AS t
-        LEFT JOIN inference_quality AS q
+        FROM {env.db.inference_forecast} AS t
+        LEFT JOIN {env.db.inference_quality} AS q
             ON t.timestamp = q.timestamp
         AND t.model_version = q.model_version
 

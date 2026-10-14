@@ -12,6 +12,7 @@
 import argparse
 import os
 import requests
+import websocket
 import sqlite3
 import subprocess
 import sys
@@ -45,7 +46,7 @@ def check_initial_setup_needed(env: WaidBoot) -> bool:
     @param env WaidBoot configuration instance.
     @return True if initial setup (database or historical data) is needed, False otherwise.
     """
-    db_path = Path(env.waid_db)
+    db_path = Path(env.waid_db_file)
     return not db_path.exists()
 
 
@@ -61,8 +62,8 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
     if extra_args is None:
         extra_args = []
 
-    raw_mock_now = os.environ.get("WAID_MOCK_NOW", "").strip()
-    is_mock_active = bool(raw_mock_now) and raw_mock_now.lower() not in (
+    raw_retro_now = os.environ.get("WAID_RETRO_NOW", "").strip()
+    is_mock_active = bool(raw_retro_now) and raw_retro_now.lower() not in (
         "none",
         "null",
         "false",
@@ -70,7 +71,7 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
 
     if mode == "incremental" and "--period" not in extra_args:
         if is_mock_active:
-            current_month = raw_mock_now[:7]
+            current_month = raw_retro_now[:7]
         else:
             current_month = datetime.now().strftime("%Y-%m")
         extra_args.extend(["--period", current_month])
@@ -80,9 +81,9 @@ def run_pipeline(mode: str, extra_args: list = None) -> int:
 
     env_vars = os.environ.copy()
     if is_mock_active:
-        env_vars["WAID_MOCK_NOW"] = raw_mock_now
+        env_vars["WAID_RETRO_NOW"] = raw_retro_now
     else:
-        env_vars.pop("WAID_MOCK_NOW", None)
+        env_vars.pop("WAID_RETRO_NOW", None)
 
     result = subprocess.run(cmd, env=env_vars, check=False)
     return result.returncode
@@ -95,35 +96,28 @@ def ping_streamlit(env: WaidBoot, timeout: int = 15) -> None:
     @param timeout HTTP request timeout in seconds (default is 15 seconds).
     @return None
     """
-    base_url = env.streamlit_url
-    health_url = urljoin(base_url if base_url.endswith("/") else f"{base_url}/", "_stcore/health")
-    
-    logger.info(
-        f"Keep-alive ping for Streamlit ({base_url}) with a timeout of {timeout} seconds..."
-    )
+    base_url = env.streamlit_url.rstrip("/")
+    ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url += "/~/+/_stcore/stream"  # On Community Cloud the path includes the /~/+/ prefix
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Cache-Control": "no-cache",
-    }
+    logger.info(f"[Keep-Alive] Pinging Streamlit app: {base_url}")
 
     try:
-        with requests.Session() as session:
-            # 1. Ping primary entrypoint
-            res_main = session.get(base_url, headers=headers, timeout=timeout)
-            
-            # 2. Ping internal healthcheck endpoint
-            res_health = session.get(health_url, headers=headers, timeout=timeout)
-            
-            logger.info(
-                f"[Keep-Alive] Streamlit ping successful! Main: {res_main.status_code}, Health: {res_health.status_code}"
-            )
-    except Exception as e:
-        logger.error(f"[Keep-Alive] Error during Streamlit ping: {e}")
+        # 1) Standard GET request: wakes/routes the app and detects sleep status
+        response = requests.get(base_url, timeout=timeout, allow_redirects=True)
+        logger.info(f"[Keep-Alive] HTTP status={response.status_code}, url={response.url}")
+        response.raise_for_status()
+
+        if "gone to sleep" in response.text.lower():
+            logger.warning("[Keep-Alive] App has gone to sleep: browser interaction required to wake it up")
+
+        # 2) WebSocket connection: counts as a real visitor session
+        ws = websocket.create_connection(ws_url, timeout=timeout)
+        ws.close()
+        logger.info("[Keep-Alive] WebSocket session opened")
+
+    except Exception as exc:
+        logger.warning(f"[Keep-Alive] Streamlit ping failed: {exc}")
 
 
 def clean_target_range(
@@ -167,14 +161,14 @@ def clean_target_range(
     )
 
     # 1. LAB DB (SQLite)
-    lab_db_path = Path(env.waid_db)
+    lab_db_path = Path(env.waid_db_file)
     if lab_db_path.exists():
         with sqlite3.connect(lab_db_path) as conn:
             cursor = conn.cursor()
             lab_tables = [
-                "inference_forecast",
-                "inference_stats",
-                "inference_quality",
+                env.db.inference_forecast,
+                env.db.inference_stats,
+                env.db.inference_quality,
             ]
             for table in lab_tables:
                 cursor.execute(
@@ -230,16 +224,16 @@ def main() -> int:
             help="Enable retroactive simulation mode",
         )
         parser.add_argument(
-            "--mock-begin",
+            "--retro-begin",
             "--begin-period",
-            dest="mock_begin",
+            dest="retro_begin",
             type=str,
             help="Start timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)",
         )
         parser.add_argument(
-            "--mock-end",
+            "--retro-end",
             "--end-period",
-            dest="mock_end",
+            dest="retro_end",
             type=str,
             help="End timestamp for retroactive loop (YYYY-MM-DD HH:MM:SS)",
         )
@@ -249,9 +243,9 @@ def main() -> int:
 
         # --- RETROACTIVE MODE ---
         if args.retroactive:
-            if not args.mock_begin or not args.mock_end:
+            if not args.retro_begin or not args.retro_end:
                 logger.error(
-                    "Both start (--mock-begin / --begin-period) and end (--mock-end / --end-period) timestamps are required in --retroactive mode."
+                    "Both start (--retro-begin / --begin-period) and end (--retro-end / --end-period) timestamps are required in --retroactive mode."
                 )
                 return WaidExit.CONFIG_FAIL
 
@@ -259,10 +253,10 @@ def main() -> int:
 
             # Preserve native local datetimes for mock clock orchestration
             begin_dt_local = datetime.strptime(
-                args.mock_begin, "%Y-%m-%d %H:%M:%S"
+                args.retro_begin, "%Y-%m-%d %H:%M:%S"
             ).replace(tzinfo=local_tz)
             end_dt_local = datetime.strptime(
-                args.mock_end, "%Y-%m-%d %H:%M:%S"
+                args.retro_end, "%Y-%m-%d %H:%M:%S"
             ).replace(tzinfo=local_tz)
 
             logger.warning(
@@ -281,7 +275,7 @@ def main() -> int:
                 current_dt = begin_dt_local
                 while current_dt < end_dt_local:
                     mock_now_str = current_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    os.environ["WAID_MOCK_NOW"] = mock_now_str
+                    os.environ["WAID_RETRO_NOW"] = mock_now_str
 
                     logger.info(
                         f"=== [RETROACTIVE STEP] Processing timestamp: {mock_now_str} ==="
@@ -289,7 +283,7 @@ def main() -> int:
 
                     extra_passthrough = [
                         "--skip-ingestion-ml-deploy",
-                        "--mock-now",
+                        "--retro-now",
                         mock_now_str,
                     ]
                     code = run_pipeline(
@@ -324,7 +318,7 @@ def main() -> int:
                     )
 
             finally:
-                os.environ.pop("WAID_MOCK_NOW", None)
+                os.environ.pop("WAID_RETRO_NOW", None)
                 logger.info(
                     "WAID Retroactive Simulation completed and environment cleaned up."
                 )

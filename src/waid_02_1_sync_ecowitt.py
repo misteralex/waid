@@ -70,7 +70,7 @@ def ensure_table_exists(env: WaidBoot) -> dict:
     }
 
     try:
-        logger.info(f"Checking current Ecowitt table schema ({env.ecowitt_table})...")
+        logger.info(f"Checking current Ecowitt table schema ({env.db.ecowitt_records})...")
         normalized_cols = list(column_map.values())
 
         pk_col = normalized_cols[0]
@@ -78,17 +78,17 @@ def ensure_table_exists(env: WaidBoot) -> dict:
         other_cols = [f'"{c}" REAL' for c in normalized_cols[2:]]
 
         create_stmt = f"""
-        CREATE TABLE IF NOT EXISTS {env.ecowitt_table} (
+        CREATE TABLE IF NOT EXISTS {env.db.ecowitt_records} (
             "{pk_col}" TEXT PRIMARY KEY,
             "{epoch_col}" INTEGER,
             {', '.join(other_cols)}
         );
         """
 
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             conn.execute(create_stmt)
 
-        logger.info(f"Table sanity check successfully completed ({env.ecowitt_table}).")
+        logger.info(f"Table sanity check successfully completed ({env.db.ecowitt_records}).")
         return column_map
 
     except sqlite3.Error as e:
@@ -225,13 +225,13 @@ def sync_ecowitt_with_db(
     total_added = 0
     sql_query = ""
 
-    with sqlite3.connect(str(env.waid_db)) as conn:
+    with sqlite3.connect(str(env.waid_db_file)) as conn:
         try:
             # Stage data to temporary SQLite table
             df.to_sql("staging_ecowitt", conn, if_exists="replace", index=False)
 
             cursor = conn.cursor()
-            cursor.execute(f"PRAGMA table_info({env.ecowitt_table})")
+            cursor.execute(f"PRAGMA table_info({env.db.ecowitt_records})")
             db_cols = [row[1] for row in cursor.fetchall()]
 
             # Keep only columns defined in target database schema
@@ -244,7 +244,7 @@ def sync_ecowitt_with_db(
             cols_str = ", ".join([f'"{c}"' for c in df_cols])
 
             sql_query = f"""
-                INSERT OR IGNORE INTO {env.ecowitt_table} ({cols_str}) 
+                INSERT OR IGNORE INTO {env.db.ecowitt_records} ({cols_str}) 
                 SELECT {cols_str} FROM staging_ecowitt
             """
 

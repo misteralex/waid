@@ -12,7 +12,7 @@
  */
 
 -- Retrieve the mock timestamp either from dbt --vars or from environment variable
-{% set mock_now = var('waid_mock_now', env_var('WAID_MOCK_NOW', '')) %}
+{% set retro_now = var('waid_retro_now', env_var('WAID_RETRO_NOW', '')) %}
 
 WITH source_predictions AS (
     /**
@@ -37,8 +37,8 @@ WITH source_predictions AS (
     AND created_at >= datetime((SELECT COALESCE(MAX(timestamp), '1970-01-01 00:00:00') FROM {{ this }}), '-3 day')
     {% endif %}
     
-    {% if mock_now != '' %}
-    AND created_at <= '{{ mock_now }}'
+    {% if retro_now != '' %}
+    AND created_at <= '{{ retro_now }}'
     {% endif %}
 ),
 

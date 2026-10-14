@@ -63,10 +63,10 @@ def load_ecowitt_telemetry(env: WaidBoot, period: pd.Timestamp) -> pd.DataFrame:
     @param period Target month as pd.Timestamp (YYYY-MM).
     @return Cleaned, hourly-reindexed DataFrame containing target features.
     """
-    if not os.path.exists(env.waid_db):
-        raise WError(f"Database file not found at: {env.waid_db}", code=WaidExit.INPUT_FAIL)
+    if not os.path.exists(env.waid_db_file):
+        raise WError(f"Database file not found at: {env.waid_db_file}", code=WaidExit.INPUT_FAIL)
 
-    conn = sqlite3.connect(env.waid_db)
+    conn = sqlite3.connect(env.waid_db_file)
     
     month_start = pd.Timestamp(period.strftime("%Y-%m-01 00:00:00"))
     month_end = period + pd.offsets.MonthEnd(1)
@@ -82,7 +82,7 @@ def load_ecowitt_telemetry(env: WaidBoot, period: pd.Timestamp) -> pd.DataFrame:
     cols_sql = ", ".join(["timestamp"] + standard_features)
     query = f"""
         SELECT {cols_sql}
-        FROM stg_ecowitt
+        FROM {env.db.stg_ecowitt}
         WHERE timestamp >= '{start_date}' AND timestamp <= '{end_date}'
         ORDER BY timestamp ASC
     """
@@ -94,11 +94,11 @@ def load_ecowitt_telemetry(env: WaidBoot, period: pd.Timestamp) -> pd.DataFrame:
 
     if df.empty:
         raise WError(
-            f"No records found in 'stg_ecowitt' for period {start_date} to {end_date}", 
+            f"No records found in '{env.db.stg_ecowitt}' for period {start_date} to {end_date}", 
             code=WaidExit.INPUT_FAIL
         )
 
-    # Standardize datetime objects and eliminate chronological duplicates
+    # Convert timestamps properly and drop any duplicate time entries
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values('timestamp').drop_duplicates(subset=['timestamp']).reset_index(drop=True)
 

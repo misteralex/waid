@@ -28,34 +28,32 @@ from boot import (
 
 def main() -> int:
     """
-    Executes the inference quality check pipeline, verifying database tables and record counts.
-    
-    Returns:
-        int: Process exit status code.
+    @brief Executes the inference quality check pipeline, verifying database tables and record counts.
+    @return Process exit status code integer.
     """
     try:
         parser = argparse.ArgumentParser(description="WAID Inference Engine")
-        parser.add_argument("--mock-now", type=str, default=None, help="Simulated current timestamp")
+        parser.add_argument("--retro-now", type=str, default=None, help="Simulated current timestamp")
         args, _ = parser.parse_known_args()
         
         env = WaidBoot()
         
-        if args.mock_now:
-            env.mock_now = validate_mock_timestamp(args.mock_now)
-            logger.info(f"Overriding mock_now with CLI argument: {env.mock_now}")
+        if args.retro_now:
+            env.retro_now = validate_mock_timestamp(args.retro_now)
+            logger.info(f"Overriding retro_now with CLI argument: {env.retro_now}")
 
-        logger.info(f"Starting quality check using DB: {env.waid_db}")
-        conn = sqlite3.connect(env.waid_db)
+        logger.info(f"Starting quality check using DB: {env.waid_db_file}")
+        conn = sqlite3.connect(env.waid_db_file)
         cursor = conn.cursor()
 
-        # Check quality benchmark table/view (inference_quality)
+        # Check quality benchmark table/view (inference quality table)
         cursor.execute("SELECT name FROM sqlite_master WHERE type in ('table', 'view') AND name='inference_quality';")
         if cursor.fetchone():
-            cursor.execute("SELECT COUNT(*) FROM inference_quality;")
+            cursor.execute(f"SELECT COUNT(*) FROM {env.db.inference_quality};")
             quality_count = cursor.fetchone()[0]
             logger.info(f"Total quality benchmark records found: {quality_count}")
         else:
-            logger.warning("Table/View 'inference_quality' does not exist in the database.")
+            logger.warning(f"Table/View '{env.db.inference_quality}' does not exist in the database.")
 
         conn.close()
         logger.success("Quality check completed successfully.")

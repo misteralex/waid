@@ -55,7 +55,6 @@ load_dotenv(dotenv_path=Path(waid_source) / "config" / "boot.env", override=os.e
 # Log management section
 # ==============================================================================
 
-# Direct read log variable to set up the required level or fallback to default 'INFO'
 current_log_level = os.getenv("WAID_LOG_LEVEL", "INFO").upper()
 current_log_dir = Path(os.getenv("WAID_LOG_DIR", "logs"))
 
@@ -221,25 +220,6 @@ if not env_file.exists():
 load_dotenv(dotenv_path=env_file, override=os.environ.get("WAID_ALLOW_ENV_OVERRIDE"))
 _expand_environment_variables(iterations=2)
 
-# ==============================================================================
-# CHECK EXPECTED DIRECTORY STRUCTURE
-# ==============================================================================
-# Ensure critical data directories exist and log their paths
-critical_data_dirs = {
-    "WAID_ECOWITT_DIR": os.getenv("WAID_ECOWITT_DIR"),
-    "WAID_ERA5_DATA_DIR": os.getenv("WAID_ERA5_DATA_DIR"),
-    "WAID_ML_MATCHES_DIR": os.getenv("WAID_ML_MATCHES_DIR"),
-    "WAID_ML_MODELS_DIR": os.getenv("WAID_ML_MODELS_DIR"),
-    "WAID_ML_TENSORS_DIR": os.getenv("WAID_ML_TENSORS_DIR"),
-}
-
-for env_key, dir_path in critical_data_dirs.items():
-    logger.debug(f"{env_key} = {dir_path}")
-    if dir_path:
-        path_obj = Path(dir_path)
-        if not path_obj.exists():
-            path_obj.mkdir(parents=True, exist_ok=True)
-            logger.info(f"[BOOT] Automatically created missing data directory: {path_obj}")
 
 # ==============================================================================
 # STREAMLIT SECRETS INTEGRATION
@@ -255,6 +235,83 @@ except Exception:
     logger.debug("Not running under Streamlit or no secrets found...")
     pass
 
+
+# ==============================================================================
+# DATABASE MANAGER CLASS 
+# ==============================================================================
+
+class WaidDB:
+    """
+    @brief Encapsulates database schema registry, table references, and DB utilities.
+    """
+    def __init__(self, data_dir: Optional[Path], registry_filename: Optional[str]) -> None:
+        """
+        @brief Initializes the WaidDB instance by parsing the active table registry.
+
+        @param data_dir Path to the active data directory.
+        @param registry_filename Filename of the dbt models markdown registry.
+        @return None
+        """
+        self.data_dir = Path(data_dir) if data_dir else Path(".")
+        self.registry_filename = registry_filename or "waid_dbt_models.md"
+        self.dbt_registry_name = os.getenv("WAID_DBT_REGISTRY_NAME", "Active Table Registry")
+        self.loaded_tables: List[str] = []
+        
+        logger.debug("[DB_REGISTRY] WaidDB initialized with")
+        logger.debug(f"[DB_REGISTRY] data_dir: {self.data_dir}")
+        logger.debug(f"[DB_REGISTRY] registry_filename: {self.registry_filename}")
+        self._load_active_registry()
+        
+    def _load_active_registry(self) -> None:
+        """
+        @brief Parses the markdown registry file to dynamically expose active physical tables as attributes.
+        """
+        registry_path = self.data_dir / self.registry_filename
+        if not registry_path.exists():
+            logger.warning(f"[DB_REGISTRY] Registry file not found at: {registry_path}")
+            return
+
+        try:
+            content = registry_path.read_text(encoding="utf-8")
+            in_registry = False
+            loaded_count = 0
+            
+            for line in content.splitlines():
+                line = line.strip()
+                if line.startswith("##") and self.dbt_registry_name in line:
+                    in_registry = True
+                    continue
+                elif in_registry and line.startswith("## "):
+                    break
+                
+                if in_registry and line.startswith("- "):
+                    parts = line.split("`")
+                    if len(parts) >= 4:
+                        table_name = parts[3]
+                        setattr(self, table_name, table_name)
+                        if table_name not in self.loaded_tables:
+                            self.loaded_tables.append(table_name)
+                        loaded_count += 1
+            
+            if loaded_count == 0:
+                logger.critical(f"[DB_REGISTRY] No table entries found in {registry_path.name}.")
+                sys.exit(WaidExit.CONFIG_FAIL)
+                
+            logger.debug(f"[DB_REGISTRY] Successfully loaded {loaded_count} active tables from {registry_path.name}")
+        except Exception as exc:
+            logger.error(f"[DB_REGISTRY] Failed to parse active table registry: {exc}")
+        
+    def dump(self) -> dict:
+        """
+        @brief Dumps the database registry status and active loaded tables.
+
+        @return dict containing registry filename and active table names.
+        """
+        return {
+            "registry_filename": self.registry_filename,
+            "loaded_tables": self.loaded_tables
+        }
+            
 # ==============================================================================
 # CONFIGURATION BASE & SETTINGS CLASSES
 # ==============================================================================
@@ -352,7 +409,6 @@ class BaseConfig:
         """
         value = os.getenv(name)
 
-        # If the variable does not exist OR is an empty string (e.g. WAID_THRESHOLD=)
         if not value or not value.strip():
             return default
 
@@ -375,15 +431,13 @@ class BootSettings(BaseConfig):
         @return None
         """
         self.waid_source_dir: Optional[Path] = self._get_path_env("WAID_SOURCE")
-        self.waid_data_dir: Optional[Path] = self._get_path_env("WAID_DATA_DIR")
+        self.waid_mock_dir: Optional[Path] = self._get_path_env("WAID_MOCK_DIR")
+        self.waid_mock_data_dir: Optional[Path] = self._get_path_env("WAID_MOCK_DATA_DIR")
         self.log_dir: Optional[Path] = self._get_path_env("WAID_LOG_DIR")
         self.log_level: str = os.getenv("WAID_LOG_LEVEL", "INFO")
         self.debug_mode: bool = os.getenv("WAID_LOG_LEVEL", "info").lower() == "debug"
         self._validate_config()
-        if self.debug_mode and execution_guard("BOOT_DUMP"):
-            self.dump()
 
-        # Check current WAID_SETUP_MODE environment variable
         waid_setup_mode = os.getenv("WAID_SETUP_MODE")
         if not waid_setup_mode or not waid_setup_mode.strip():
             waid_setup_mode = "0"
@@ -391,16 +445,19 @@ class BootSettings(BaseConfig):
         else:
             logger.warning(f"Using required fallback WAID_SETUP_MODE: {waid_setup_mode}")
 
-        # Shared setup mode for application-wide conditional logic (0=default, 1=setup, 2=purge all data, 3=ml restart)
         self.setup_mode = int(waid_setup_mode.strip() or 0)
-
+        self.waid_sim_mode: bool = os.getenv("WAID_SIM_MODE", "false").lower() == "true"
+        
+        if self.waid_sim_mode:
+            self.waid_data_dir: Optional[Path] = self.waid_mock_data_dir
+        else:
+            self.waid_data_dir: Optional[Path] = self._get_path_env("WAID_DATA_DIR")
 
 class WaidSettings(BaseConfig):
     """
     @brief Application-level configurations and pipeline specifications.
     """
 
-    # Unified Weather Features Configuration mapping
     ML_OUTPUT_FEATURES: List[Dict[str, str]] = [
         {
             "name": "Temperature",
@@ -452,7 +509,6 @@ class WaidSettings(BaseConfig):
         },
     ]
 
-    # Input features added by the model pipeline
     ML_AUXILIARY_FEATURES = [
         "hour_sin",
         "hour_cos",
@@ -474,42 +530,71 @@ class WaidSettings(BaseConfig):
         self.log_dir: Optional[Path] = self._get_path_env("WAID_LOG_DIR")
         self.deploy_dir: Optional[Path] = self._get_path_env("WAID_DEPLOY_DIR")
         self.docs_dir: Optional[Path] = self._get_path_env("WAID_DOCS_DIR")
-        self.version: Optional[str] = os.getenv("WAID_VERSION")
         self.tools_dir: Optional[Path] = self._get_path_env("WAID_TOOLS_DIR")
+        
+        if boot_settings.waid_sim_mode:
+            self.waid_data_dir: Optional[Path] = boot_settings.waid_mock_data_dir
+            self.ecowitt_dir: Optional[Path] = \
+                boot_settings.waid_mock_data_dir / Path(self._get_path_env("WAID_ECOWITT_DIR")).name
+            self.era5_data_dir: Optional[Path] = \
+                boot_settings.waid_mock_data_dir / Path(self._get_path_env("WAID_ERA5_DATA_DIR")).name
+            self.ml_matches_dir: Optional[Path] = \
+                boot_settings.waid_mock_data_dir / Path(self._get_path_env("WAID_ML_MATCHES_DIR")).name
+            self.ml_tensors_dir: Optional[Path] = \
+                boot_settings.waid_mock_data_dir / Path(self._get_path_env("WAID_ML_TENSORS_DIR")).name
+            self.ml_models_dir: Optional[Path] = \
+                boot_settings.waid_mock_data_dir / Path(self._get_path_env("WAID_ML_MODELS_DIR")).name
+            
+            self.waid_db_file: Optional[str] = os.getenv("WAID_DB_MOCK_FILE")
+            self.deploy_db_file: Optional[str] = os.getenv("WAID_DEPLOY_MOCK_FILE")
+        else:
+            self.waid_data_dir: Optional[Path] = self._get_path_env("WAID_DATA_DIR")
+            self.ecowitt_dir: Optional[Path] = self._get_path_env("WAID_ECOWITT_DIR")
+            self.era5_data_dir: Optional[Path] = self._get_path_env("WAID_ERA5_DATA_DIR")
+            self.ml_matches_dir: Optional[Path] = self._get_path_env("WAID_ML_MATCHES_DIR")
+            self.ml_tensors_dir: Optional[Path] = self._get_path_env("WAID_ML_TENSORS_DIR")
+            self.ml_models_dir: Optional[Path] = self._get_path_env("WAID_ML_MODELS_DIR")
 
-        # Unified Weather Features Configuration mapping
+            self.waid_db_file: Optional[str] = os.getenv("WAID_DB_FILE")
+            self.deploy_db_file: Optional[str] = os.getenv("WAID_DEPLOY_FILE")
+            
+        critical_data_dirs = {
+            "WAID_DATA_DIR": self.waid_data_dir,
+            "WAID_ECOWITT_DIR": self.ecowitt_dir,
+            "WAID_ERA5_DATA_DIR": self.era5_data_dir,
+            "WAID_ML_MATCHES_DIR": self.ml_matches_dir,
+            "WAID_ML_MODELS_DIR": self.ml_models_dir,
+            "WAID_ML_TENSORS_DIR": self.ml_tensors_dir,
+        }
+        for env_key, dir_path in critical_data_dirs.items():
+            logger.debug(f"{env_key} = {dir_path}")
+            if dir_path:
+                path_obj = Path(dir_path)
+                if not path_obj.exists():
+                    path_obj.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"[BOOT] Automatically created missing data directory: {path_obj}")
+
+        self.version: Optional[str] = os.getenv("WAID_VERSION")
+        
         self.output_features = self.ML_OUTPUT_FEATURES
         self.input_features = self.ML_INPUT_FEATURES
         self.input_features_match = self.ML_INPUT_FEATURES_MATCH
         self.n_input_features: int = len(self.input_features)
         self.n_output_features: int = len(self.output_features)
-
-        # Dynamic Simulation vs Production DB toggle
-        self.waid_sim_mode: bool = os.getenv("WAID_SIM_MODE", "false").lower() == "true"
-        if self.waid_sim_mode:
-            self.waid_db: Optional[str] = os.getenv("WAID_DB_MOCK_FILE")
-            self.deploy_db_file: Optional[str] = os.getenv("WAID_DEPLOY_MOCK_FILE")
-        else:
-            self.waid_db: Optional[str] = os.getenv("WAID_DB_FILE")
-            self.deploy_db_file: Optional[str] = os.getenv("WAID_DEPLOY_FILE")
-
-        # Deploy configuration
+        
         self.deploy_mode: Optional[str] = get_env_with_fallback("WAID_DEPLOY_MODE", "local", var_type=str).lower()
 
-        # Directories & Tables
-        self.ecowitt_dir: Optional[Path] = self._get_path_env("WAID_ECOWITT_DIR")
-        self.ecowitt_table: Optional[str] = os.getenv("WAID_ECOWITT_TABLE")
-        self.era5_data_dir: Optional[Path] = self._get_path_env("WAID_ERA5_DATA_DIR")
         self.dbt_dir: Optional[Path] = self._get_path_env("WAID_DBT_DIR")
         self.dbt_profiles_dir: Optional[Path] = self._get_path_env("WAID_DBT_PROFILES_DIR")
-        self.dbt_bin = Path(os.getenv("WAID_SOURCE")) / ".venv-dbt" / "bin" / "dbt"
+        self.dbt_models_md_file: Optional[str] = os.getenv("WAID_DBT_MODELS_MD_FILE")
+        self.dbt_hash_file : Optional[str] = os.getenv("WAID_DBT_HASH_FILE")
+        self.dbt_registry_name: Optional[str] = os.getenv("WAID_DBT_REGISTRY_NAME", "Active Table Registry")
+        self.dbt_bin_file = Path(os.getenv("WAID_SOURCE")) / ".venv-dbt" / "bin" / "dbt"
 
-        # Ecowitt Gateway Configurations
         self.ecowitt_gw_ip: Optional[str] = get_env_with_fallback("WAID_ECOWITT_GW_IP", "192.168.1.100", var_type=str)
         self.ecowitt_gw_port: Optional[int] = self._get_int_env("WAID_ECOWITT_GW_PORT")
         self.ecowitt_gw_timeout_sec: Optional[int] = self._get_int_env("WAID_ECOWITT_GW_TIMEOUT_SEC", 10)
 
-        # Ecowitt Station Specs
         self.ecowitt_station_id: Optional[str] = get_env_with_fallback("WAID_ECOWITT_STATION_ID", "STATION_01", var_type=str)
         self.ecowitt_station_name: Optional[str] = get_env_with_fallback("WAID_ECOWITT_STATION_NAME", "Local Home Weather Station", var_type=str)
         self.ecowitt_latitude = get_env_with_fallback("WAID_ECOWITT_LATITUDE", 41.9028, var_type=float)
@@ -517,32 +602,23 @@ class WaidSettings(BaseConfig):
         self.ecowitt_elevation_m: Optional[float] = get_env_with_fallback("WAID_ECOWITT_ELEVATION_M", 20.0, var_type=float)
         self.ecowitt_floor: Optional[float] = get_env_with_fallback("WAID_ECOWITT_FLOOR", 2, var_type=int)
 
-        # Retrieve the variable and apply the fallback if it is None, empty, or whitespace only
         raw_tz = get_env_with_fallback("WAID_TIMEZONE", "Europe/Rome", var_type=str)
         self.tz_timezone = self._validate_timezone(raw_tz)
 
         self.resample_interval_min: Optional[int] = self._get_int_env("WAID_RESAMPLE_INTERVAL_MIN", 60)
         self.max_interpolate_hours: Optional[int] = self._get_int_env("WAID_MAX_INTERPOLATE_HOURS", 2)
 
-        # External Services (ERA5, Services ports)
         self.era5_api_url: Optional[str] = os.getenv("WAID_ERA5_API_URL")
         self.era5_api_key: str = get_env_with_fallback("WAID_ERA5_API_KEY", "placeholder_era5_key", var_type=str)
 
-        # Forecasting & Lookback Parameters
         self.forecast_horizon_hours: Optional[int] = self._get_int_env("WAID_FORECAST_HORIZON_HOURS")
         self.lookback_hours: Optional[int] = self._get_int_env("WAID_LOOKBACK_HOURS", 24)
         self.fastapi_port: Optional[int] = self._get_int_env("WAID_FASTAPI_PORT", 8000)
         self.streamlit_port: Optional[int] = self._get_int_env("WAID_STREAMLIT_PORT", 8501)
         self.streamlit_url: Optional[str] = os.getenv("WAID_STREAMLIT_URL", "https://waid-analytics.streamlit.app/")
 
-        # ML Pipelines Configurations
-        self.ml_matches_dir: Optional[Path] = self._get_path_env("WAID_ML_MATCHES_DIR")
-        self.ml_matches_table: Optional[str] = os.getenv("WAID_ML_MATCHES_TABLE")
-        self.ml_tensors_dir: Optional[Path] = self._get_path_env("WAID_ML_TENSORS_DIR")
-        self.ml_models_dir: Optional[Path] = self._get_path_env("WAID_ML_MODELS_DIR")
         self.ml_threshold_min: Optional[int] = self._get_int_env("WAID_ML_THRESHOLD_MIN")
 
-        # Bias Parameters
         self.max_bias_temp: Optional[float] = self._get_float_env("WAID_ML_BIAS_TEMP")
         self.max_bias_pres: Optional[float] = self._get_float_env("WAID_ML_BIAS_PRES")
         self.max_bias_rh: Optional[float] = self._get_float_env("WAID_ML_BIAS_RH")
@@ -550,56 +626,46 @@ class WaidSettings(BaseConfig):
         self.max_bias_solar: Optional[float] = self._get_float_env("WAID_ML_BIAS_SOLAR")
         self.max_bias_rain: Optional[float] = self._get_float_env("WAID_ML_BIAS_RAIN")
 
-        # Guardrail Training Parameters
         self.ml_min_training_days: Optional[int] = self._get_int_env("WAID_ML_MIN_TRAINING_DAYS", 14)
         self.ml_retrain_window_days: Optional[int] = self._get_int_env("WAID_ML_RETRAIN_WINDOW_DAYS", 30)
 
-        # ML Model File Names
         self.ml_model_h5_file: Optional[str] = os.getenv("WAID_ML_MODEL_H5_FILE")
         self.ml_input_scaler_pkl_file: Optional[str] = os.getenv("WAID_ML_INPUT_SCALER_PKL_FILE")
         self.ml_output_scaler_pkl_file: Optional[str] = os.getenv("WAID_ML_OUTPUT_SCALER_PKL_FILE")
 
-        # Configuration scheduler settings
         self.scheduled_interval_hours: Optional[int] = self._get_int_env("SCHEDULER_INTERVAL_HOURS", 1)
 
-        # 1. Optional backfill periods -> allow_none=True
         self.backfill_begin_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_BEGIN_PERIOD"), allow_none=True)
         self.backfill_end_period: Optional[datetime] = validate_period(os.getenv("SCHEDULER_BACKFILL_END_PERIOD"), allow_none=True)
         self.auto_backfill: bool = os.getenv("AUTO_BACKFILL", "false").lower() == "true"
 
-        self.mock_now: Optional[datetime] = validate_mock_timestamp(os.getenv("WAID_MOCK_NOW"))
-        self.mock_interval_hours: int = self._get_int_env("WAID_MOCK_INTERVAL_HOURS", 1)
+        self.retro_now: Optional[datetime] = validate_mock_timestamp(os.getenv("WAID_RETRO_NOW"))
+        self.mock_interval_hours: int = self._get_int_env("WAID_RETRO_INTERVAL_HOURS", 1)
         self.retro_cleanup: bool = os.getenv("WAID_RETRO_CLEANUP", "false").lower() == "true"
 
-        # Number of lookback days for historical prediction reconciliation
         self.reconciliation_cutoff_days: Optional[int] = self._get_int_env("WAID_RECONCILIATION_CUTOFF_DAYS", 6)
 
-        # Sanity check for expected schema target (e.g. Supabase)
         self.db_schema_target: Optional[str] = os.getenv("WAID_DB_SCHEMA_TARGET", "draft")
 
-        # Backend platform configurations (multi-target Supabase database)
         self.dev_db_config: DBCredentials = get_db_credentials("draft")
         self.prod_db_config: DBCredentials = get_db_credentials("prod")
         self.retro_db_config: DBCredentials = get_db_credentials("retro")
 
-        # Fallback/Default active configuration based on WAID_DB_SCHEMA_TARGET or Cloud injection
         self.active_db_config: DBCredentials = get_db_credentials(self.db_schema_target)
 
-        self._validate_config()
-        if boot_settings.debug_mode and execution_guard("WAID_DUMP"):
-            self.dump()
-
-    def _validate_config(self) -> None:
+        self._validate_config(boot_settings)
+            
+    def _validate_config(self, boot_settings: BootSettings) -> None:
         """
         @brief Overridden configuration validator.
+        @param boot_settings The loaded bootstrap settings instance.
         @details 1. Validates base configuration excluding explicitly optional fields.
-                    - 'mock_now' and 'backfill_period' are optional for business logic.
                  2. Performs sanity checks on station metadata and structural requirements.
 
         @return None
         """
         super()._validate_config(optional_fields={
-            "mock_now",
+            "retro_now",
             "backfill_begin_period",
             "backfill_end_period",
             "ecowitt_latitude",
@@ -613,13 +679,11 @@ class WaidSettings(BaseConfig):
 
         station_errors = []
 
-        # Simulation mode check: requires mock file if enabled
-        if self.waid_sim_mode and not self.waid_db:
+        if boot_settings.waid_sim_mode and not self.waid_db_file:
             station_errors.append(
                 "WAID_SIM_MODE is True, but WAID_DB_MOCK_FILE is missing in environment config."
             )
 
-        # Block execution if errors exist
         if station_errors:
             logger.critical(
                 "\n[!] STATION METADATA SANITY CHECK FAILURE:\n" +
@@ -634,7 +698,6 @@ class WaidSettings(BaseConfig):
         @param tz_str The timezone string to validate (e.g., 'Europe/Rome').
         @return Validated timezone string.
         """
-        # If the field is empty or None, skip validation and return as is (or handle the default upstream)
         if not tz_str or not tz_str.strip():
             return tz_str
 
@@ -718,7 +781,7 @@ waid_settings_instance = WaidSettings(boot_settings=boot_env)
 
 class WaidBoot:
     """
-    @brief Unified access interface for bootstrap configuration components.
+    @brief Unified access interface for bootstrap configuration components and database registry.
     """
     def __init__(
         self,
@@ -726,7 +789,7 @@ class WaidBoot:
         settings: Optional[WaidSettings] = None
     ) -> None:
         """
-        @brief Initializes the unified boot access wrapper.
+        @brief Initializes the unified boot access wrapper and triggers configuration/registry dumps.
 
         @param boot_settings BootSettings instance.
         @param settings WaidSettings instance.
@@ -735,7 +798,44 @@ class WaidBoot:
         self._boot_settings = boot_settings or boot_env
         self._settings = settings or waid_settings_instance
         self.waid_exit = WaidExit()
+        
+        self.db = WaidDB(
+            data_dir=getattr(self._settings, "waid_data_dir", None),
+            registry_filename=getattr(self._settings, "dbt_models_md_file", None)
+        )
+        
+        if execution_guard("WAID_BOOT_DUMP"):
+            self.dump()
+        
+    def dump(self) -> None:
+        """
+        @brief Log active configuration settings and database registry states for debugging purposes.
 
+        @return None
+        """
+        logger.info("=== [DEBUG] WAID BOOT UNIFIED CONFIGURATION DUMP ===")
+        
+        if hasattr(self._boot_settings, "dump"):
+            self._boot_settings.dump()
+        if hasattr(self._settings, "dump"):
+            self._settings.dump()
+        
+        if hasattr(self, "db"):
+            logger.debug("=== [DB_REGISTRY] WAID_DB ACTIVE TABLES REGISTRY ===")
+            logger.debug(f"[DB_REGISTRY] data_dir: {getattr(self.db, 'data_dir', 'N/A')}")
+            logger.debug(f"[DB_REGISTRY] registry_filename: {getattr(self.db, 'registry_filename', 'N/A')}")
+            
+            try:
+                # Explicitly exclude WaidDB configuration and service attributes
+                excluded_attrs = {"data_dir", "registry_filename", "dbt_registry_name", "loaded_tables", "dump"}
+                tables_list = [
+                    attr for attr in dir(self.db) 
+                    if not attr.startswith("_") and attr not in excluded_attrs and not callable(getattr(self.db, attr))
+                ]
+                logger.debug(f"[DB_REGISTRY] loaded_tables ({len(tables_list)}): {tables_list}")
+            except Exception as e:
+                logger.debug(f"[DB_REGISTRY] loaded_tables retrieval error: {e}")
+            
     def __getattr__(self, name: str) -> Any:
         """
         @brief Delegates attribute access to underlying configuration instances.
@@ -749,5 +849,4 @@ class WaidBoot:
             return getattr(self._settings, name)
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
-if boot_env.debug_mode:
-    logger.debug(f"WAID_VERSION = {repr(os.environ.get('WAID_VERSION'))} (configuration source: waid.env)")
+waid_boot = WaidBoot()

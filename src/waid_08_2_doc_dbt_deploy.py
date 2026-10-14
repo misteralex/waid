@@ -4,7 +4,8 @@
 @file waid_08_2_doc_dbt_deploy.py
 @brief Automated dbt documentation pipeline and physical SQLite schema inspector.
 @details Calculates incremental hashes, triggers dbt docs, parses manifest.json, 
-         inspects physical SQLite databases, and outputs a comprehensive Markdown report.
+         inspects pure physical SQLite databases via environment pointers, and outputs 
+         a structured Markdown report.
 @author AF
 @date 2026
 """
@@ -37,13 +38,11 @@ from waid_shared import (
 def calculate_models_hash(dbt_dir: Path) -> str:
     """
     @brief Calculates a cumulative MD5 hash of all .sql and .yml files within the models directory.
-
     @param dbt_dir Path to the dbt project directory.
     @return Cumulative MD5 hash hex string.
     """
     hasher = hashlib.md5()
     models_dir = dbt_dir / "models"
-    
     files = sorted(list(models_dir.rglob("*.sql")) + list(models_dir.rglob("*.yml")))
     
     for file_path in files:
@@ -52,79 +51,62 @@ def calculate_models_hash(dbt_dir: Path) -> str:
     return hasher.hexdigest()
 
 
-def extract_sqlite_schemas(project_root: Path) -> str:
+def get_pure_live_tables(db_path: Path) -> list:
     """
-    @brief Scans for SQLite database files and extracts their tables and column definitions.
-
-    @param project_root Root path of the WAID project.
-    @return Markdown formatted string containing SQLite database structures.
+    @brief Extracts pure user tables directly from the physical SQLite database master table.
+    @param db_path Path to the SQLite database file.
+    @return List of pure operational table names.
     """
-    content = "## 🗄️ Physical SQLite Databases & Tables\n\n"
-    content += "> Inspected directly from local SQLite database files.\n\n---\n\n"
+    tables = []
+    if not db_path.exists():
+        return tables
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
+        rows = cursor.fetchall()
+        for (tname,) in rows:
+            tables.append(tname)
+        conn.close()
+    except Exception:
+        pass
+    return tables
+
+
+def extract_table_info(cursor, table_name: str) -> str:
+    """
+    @brief Extracts column definitions for a specific SQLite table into Markdown format.
+    @param cursor SQLite database cursor.
+    @param table_name Name of the table.
+    @return Markdown formatted table structure.
+    """
+    content = f"#### Table: `{table_name}`\n\n"
+    content += "| Column | Type | NotNull | Default | PK |\n"
+    content += "| :--- | :--- | :--- | :--- | :--- |\n"
     
-    # Locate potential SQLite files across typical project paths
-    db_files = list(project_root.rglob("*.db")) + list(project_root.rglob("*.sqlite"))
+    cursor.execute(f'PRAGMA table_info("{table_name}")')
+    columns = cursor.fetchall()
+    for col in columns:
+        col_name = col[1]
+        col_type = col[2] or "ANY"
+        not_null = "YES" if col[3] == 1 else "NO"
+        default_val = str(col[4]) if col[4] is not None else "-"
+        pk = "YES" if col[5] > 0 else "NO"
+        content += f"| **{col_name}** | `{col_type}` | {not_null} | {default_val} | {pk} |\n"
     
-    if not db_files:
-        content += "_No physical SQLite database files found in the workspace._\n\n"
-        return content
-
-    for db_path in sorted(set(db_files)):
-        # Skip temporary or target build artifacts if needed
-        if "target" in db_path.parts or ".dbt" in db_path.parts:
-            continue
-            
-        try:
-            rel_path = db_path.relative_to(project_root)
-        except ValueError:
-            rel_path = db_path
-
-        content += f"### 📁 Database File: `{rel_path}`\n\n"
-        try:
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
-            tables = cursor.fetchall()
-            
-            if not tables:
-                content += "_No user tables found in this database._\n\n"
-                conn.close()
-                continue
-
-            for (table_name,) in tables:
-                content += f"#### Table: `{table_name}`\n\n"
-                content += "| Column | Type | NotNull | Default | PK |\n"
-                content += "| :--- | :--- | :--- | :--- | :--- |\n"
-                
-                # Use double quotes for table identifier escaping
-                cursor.execute(f'PRAGMA table_info("{table_name}")')
-                columns = cursor.fetchall()
-                for col in columns:
-                    col_name = col[1]
-                    col_type = col[2] or "ANY"
-                    not_null = "YES" if col[3] == 1 else "NO"
-                    default_val = str(col[4]) if col[4] is not None else "-"
-                    pk = "YES" if col[5] > 0 else "NO"
-                    content += f"| **{col_name}** | `{col_type}` | {not_null} | {default_val} | {pk} |\n"
-                
-                content += "\n"
-            conn.close()
-        except Exception as exc:
-            content += f"> **Error inspecting database:** `{exc}`\n\n"
-            
-        content += "---\n\n"
-        
+    content += "\n"
     return content
 
 
-def extract_and_generate_markdown(manifest_path: Path, output_file: Path, project_root: Path) -> None:
+def generate_structured_markdown(env : WaidBoot, manifest_path: Path, output_file: Path, project_root: Path, live_tables: list) -> None:
     """
-    @brief Reads dbt manifest.json and physical SQLite files to generate a unified Markdown documentation report.
-
+    @brief Reads dbt manifest.json and physical SQLite files to generate a unified, 
+           hierarchically structured Markdown documentation report.
+    @param env WaidBoot configuration instance.
     @param manifest_path Path to manifest.json generated by dbt.
     @param output_file Target Path where the Markdown documentation will be written.
-    @param project_root Root path of the WAID project for SQLite scanning.
-    @raises WError If the manifest.json file is not found.
+    @param project_root Root path of the WAID project.
+    @param live_tables List of pure live operational tables.
     """
     try:
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -132,15 +114,84 @@ def extract_and_generate_markdown(manifest_path: Path, output_file: Path, projec
     except FileNotFoundError:
         raise WError(f"Manifest not found at {manifest_path}. Execute 'dbt compile' first.", WaidExit.INPUT_FAIL)
 
+    # 1. Operational Live Database Inspection (using env.waid_db_file)
+    sqlite_details_content = ""
+    sqlite_details_content += f"### Database File: `{env.waid_data_dir}`\n\n"
+    if Path(env.waid_db_file).exists():
+        try:
+            conn = sqlite3.connect(str(Path(env.waid_db_file)))
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
+            tables = cursor.fetchall()
+            for (table_name,) in tables:
+                sqlite_details_content += extract_table_info(cursor, table_name)
+            conn.close()
+        except Exception as exc:
+            sqlite_details_content += f"> **Error inspecting operational database:** `{exc}`\n\n"
+    else:
+        sqlite_details_content += "_Operational database file not found._\n\n"
+    sqlite_details_content += "---\n\n"
+
+    # 2. Deploy Target Database Inspection (using env.deploy_db_file)
+    deploy_content = "## 🚀 Deploy Target Database (Isolated - Non-Versioned)\n\n"
+    deploy_content += "> Inspected from isolated deploy target database (`env.deploy_db_file`). Not part of core versioning.\n\n---\n\n"
+    
+    if env.deploy_db_file and Path(env.deploy_db_file).exists():
+        try:
+            rel_deploy_path = Path(env.deploy_db_file).relative_to(project_root)
+        except ValueError:
+            rel_deploy_path = Path(env.deploy_db_file)
+
+        deploy_content += f"### Deploy Database: `{rel_deploy_path}`\n\n"
+        try:
+            conn = sqlite3.connect(str(Path(env.deploy_db_file)))
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
+            tables = cursor.fetchall()
+            if not tables:
+                deploy_content += "_No user tables found in this deploy database._\n\n"
+            else:
+                for (tname,) in tables:
+                    deploy_content += extract_table_info(cursor, tname)
+            conn.close()
+        except Exception as exc:
+            deploy_content += f"> **Error inspecting deploy database:** `{exc}`\n\n"
+        deploy_content += "---\n\n"
+    else:
+        deploy_content += "_No deploy target database found at configured path._\n\n"
+
+    # 3. Write structured Markdown report
     with open(output_file, "w", encoding="utf-8") as f:
-        f.write("# 📊 WAID Data Architecture & Models Documentation\n\n")
-        f.write("> Automatically generated report from dbt `manifest.json` and physical SQLite inspection.\n\n---\n\n")
+        f.write("# WAID Data Architecture & Models Documentation\n\n")
+        f.write("> Automatically generated report separating live operational structures and historical/dbt artifacts.\n\n")
         
-        # 1. dbt Models Section
-        f.write("## 🏗️ dbt Transform Models\n\n")
+        # --- ACTIVE TABLE REGISTRY ---
+        f.write(f"## {env.dbt_registry_name}\n\n")
+        f.write(f"> **Source Database:** `{env.waid_data_dir}`\n\n")
+        
+        # List tables distinguishing whether they are dbt models or raw/external tables
+        dbt_model_names = {node_data.get('name') for node_data in manifest.get("nodes", {}).values() if node_data.get('resource_type') == "model"}
+        
+        for tname in live_tables:
+            if tname in dbt_model_names:
+                f.write(f"- `[DB-Model]` `{tname}` *(Generated/Managed by dbt)*\n")
+            else:
+                f.write(f"- `[DB-Raw]` `{tname}` *(Raw / External Source)*\n")
+        
+        f.write("\n---\n\n")
+        
+    # --- DBT TRANSFORM MODELS DETAILS ---
+        f.write("## 🏗️ dbt Transform Models Details\n\n")
         for node_id, node_data in manifest.get("nodes", {}).items():
             if node_data.get("resource_type") == "model":
-                f.write(f"### Model: `{node_data.get('name')}`\n\n")
+                model_name = node_data.get('name')
+                
+                # If we want to avoid printing orphaned or non-existent models (e.g., stg_matches if missing in DB or specs)
+                # we can skip them if they do not fit clean criteria or similar leftovers
+                if model_name == "stg_matches":
+                    continue
+
+                f.write(f"### Model: `{model_name}`\n\n")
                 f.write(f"**Schema:** `{node_data.get('schema')}`  \n")
                 f.write(f"**Description:** {node_data.get('description', 'No description available.')}\n\n")
                 
@@ -155,33 +206,20 @@ def extract_and_generate_markdown(manifest_path: Path, output_file: Path, projec
                 
                 f.write("\n---\n\n")
         
-        # 2. Physical SQLite Databases Section
-        sqlite_markdown = extract_sqlite_schemas(project_root)
-        f.write(sqlite_markdown)
+        # --- PHYSICAL SQLITE DATABASES ---
+        f.write("## Physical SQLite Databases & Tables\n\n")
+        f.write("> Inspected directly from local operational SQLite database files.\n\n---\n\n")
+        f.write(sqlite_details_content)
+        
+        # --- DEPLOY TARGET (Trailing) ---
+        f.write(deploy_content)
                 
     logger.info(f"Comprehensive Markdown documentation successfully generated: {output_file}")
-
-
-def check_and_complete() -> None: 
-    """
-    @brief Verifies that the generated Markdown documentation exists and provides local preview instructions.
-    """
-    doc_file = Path("docs/waid_dbt_models.md")
-    if doc_file.exists():
-        logger.info(f"Verification successful: Found generated documentation at {doc_file}")
-    else:
-        logger.warning(f"Verification warning: Expected documentation file not found at {doc_file}")
-
-    logger.info(
-        "To view the dbt docs locally, run: "
-        "python3 -m http.server 8080 --directory dbt/target"
-    )
 
 
 def main() -> int:
     """
     @brief Main entry point for documentation generation, dbt parsing, and database inspection.
-
     @return Execution status code.
     """
     try:
@@ -191,23 +229,24 @@ def main() -> int:
         dbt_dir = Path(env.dbt_dir).resolve()
         project_root = Path(env.waid_source_dir).resolve()
         profiles_dir = Path(getattr(env, "config_dir", project_root / "config")).resolve()
-
+        operational_markdown = env.waid_data_dir / env.dbt_models_md_file
+        
+        # Docs directory handling for docker vs local execution
         if is_in_docker():
             docs_dir = Path("/tmp/docs")
         else:
-            docs_dir = env.docs_dir
-
+            docs_dir = Path(env.docs_dir).resolve()
         docs_dir.mkdir(parents=True, exist_ok=True)
-        markdown_output = docs_dir / "waid_dbt_models.md"
-        hash_file = docs_dir / ".dbt_models.hash"
-        
+        official_markdown = docs_dir / env.dbt_models_md_file
+
+        hash_file = env.waid_data_dir / env.dbt_hash_file
         current_models_hash = calculate_models_hash(dbt_dir)
         
         target_dir = dbt_dir / "target" if (dbt_dir / "target" / "manifest.json").exists() else Path("/tmp/dbt_runtime/target")
         manifest_path = target_dir / "manifest.json"
         
         dbt_cmd = [
-            str(env.dbt_bin), "docs", "generate", "--profiles-dir", str(profiles_dir), "--project-dir", str(dbt_dir)
+            str(env.dbt_bin_file), "docs", "generate", "--profiles-dir", str(profiles_dir), "--project-dir", str(dbt_dir)
         ]
         
         logger.info(f"Executing: {' '.join(dbt_cmd)}")
@@ -215,12 +254,20 @@ def main() -> int:
         if result.returncode != 0:
             logger.warning("dbt docs generate returned non-zero, proceeding with available manifest or fallback.")
 
-        # Generate combined markdown including dbt nodes and SQLite physical tables
-        extract_and_generate_markdown(manifest_path, markdown_output, project_root)
+        # Extract pure live tables from the operational database
+        logger.debug(f"Inspecting operational database at: {env.waid_db_file}")
+        live_tables = get_pure_live_tables(Path(env.waid_db_file))
+
+        # Generate structured markdown in the operational data directory
+        generate_structured_markdown(env, manifest_path, operational_markdown, project_root, live_tables)
         hash_file.write_text(current_models_hash)
 
-        check_and_complete()
-        
+        if not env.waid_sim_mode:
+            official_markdown.write_text(operational_markdown.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info(f"Official documentation updated at: {official_markdown} (Simulation Mode: OFF)")
+        else:
+            logger.info(f"Simulation Mode active (waid_sim_mode=True): skipping official docs/ update.")
+
         logger.success("Documentation pipeline completed successfully.")
         return WaidExit.SUCCESS
 

@@ -61,15 +61,15 @@ def denormalize_predictions(y_scaler: StandardScaler, preds_scaled: np.ndarray) 
 
 
 def ensure_model_registry_schema(env: WaidBoot) -> None:
-    """Ensures ml_model_registry table exists before performing registration operations.
+    """Ensures ML model registry table exists before performing registration operations.
 
     @param env Initialized framework environment context (WaidBoot).
     @return None
     """
     station_id = env.ecowitt_station_id
     
-    create_model_registry_stmt = """
-    CREATE TABLE IF NOT EXISTS ml_model_registry (
+    create_model_registry_stmt = f"""
+    CREATE TABLE IF NOT EXISTS {env.db.ml_model_registry} (
         model_version TEXT PRIMARY KEY,
         station_id TEXT NOT NULL,
         trained_at TEXT NOT NULL,
@@ -80,17 +80,17 @@ def ensure_model_registry_schema(env: WaidBoot) -> None:
         model_path TEXT NOT NULL,
         metrics_mse REAL,
         is_active INTEGER DEFAULT 1,
-        FOREIGN KEY (station_id) REFERENCES station_metadata(station_id)
+        FOREIGN KEY (station_id) REFERENCES {env.db.station_metadata}(station_id)
     );
     """
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
             cursor.execute(create_model_registry_stmt)
             conn.commit()
     except sqlite3.Error as e:
-        raise WError(f"Failed to initialize ml_model_registry schema: {e}", code=WaidExit.DATA_FAIL)
+        raise WError(f"Failed to initialize ML model registry {env.db.ml_model_registry} schema: {e}", code=WaidExit.DATA_FAIL)
 
 
 def get_max_timestamp(env: WaidBoot) -> str:
@@ -99,11 +99,11 @@ def get_max_timestamp(env: WaidBoot) -> str:
     @param env Initialized framework environment context (WaidBoot).
     @return ISO formatted maximum timestamp string or current UTC time fallback.
     """
-    query = "SELECT MAX(timestamp) FROM stg_ecowitt"
+    query = f"SELECT MAX(timestamp) FROM {env.db.stg_ecowitt}"
     last_ecowitt_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
             cursor.execute(query)
             row = cursor.fetchone()
@@ -122,7 +122,8 @@ def check_retrain_required(
     latest_available_period: str, 
     min_training_days: int
 ) -> bool:
-    """Checks if a new training run is required based on registry status and minimum training interval.
+    """Checks if a new training run is required based on physical artifact existence on disk 
+    and minimum training interval.
 
     @param env Initialized framework environment context (WaidBoot).
     @param station_id Identifier of target station.
@@ -131,22 +132,41 @@ def check_retrain_required(
     @param min_training_days Minimum number of days required between training runs.
     @return True if retraining should proceed, False otherwise.
     """
-    logger.info(f"Checking ML model registry status for Station: '{station_name}' ({station_id})...")
+    logger.info(f"Checking physical ML model artifacts on disk for Station: '{station_name}' ({station_id})...")
 
-    query = """
+    models_dir = Path(env.ml_models_dir)
+    
+    # Define expected core model artifact files
+    expected_artifacts = [
+        models_dir / env.ml_input_scaler_pkl_file,
+        models_dir / env.ml_output_scaler_pkl_file,
+        models_dir / env.ml_model_h5_file,
+    ]
+    
+    missing_artifacts = [str(p) for p in expected_artifacts if not p.exists()]
+
+    if missing_artifacts:
+        logger.warning(
+            f"Required physical ML model artifacts are missing on disk: {missing_artifacts}. "
+            "Forcing automatic model retraining..."
+        )
+        return True
+
+    # If all physical files exist, check the SQLite registry for temporal guardrails (min training days / newer period)
+    query = f"""
         SELECT trained_at, last_ecowitt_timestamp 
-        FROM ml_model_registry 
+        FROM {env.db.ml_model_registry} 
         WHERE station_id = ? AND is_active = 1 
         ORDER BY trained_at DESC LIMIT 1
     """
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
             cursor.execute(query, (station_id,))
             row = cursor.fetchone()
 
         if not row or not row[0]:
-            logger.info("No active model registry record found. Proceeding with initial model training.")
+            logger.info("No active model registry record found despite physical files. Proceeding with retraining.")
             return True
 
         last_trained_at_str, last_trained_ts = row
@@ -159,8 +179,8 @@ def check_retrain_required(
         # Guardrail: Do not retrain if fewer days have passed than min_training_days
         if days_since_last_training < min_training_days:
             logger.success(
-                f"Retraining skipped: Only {days_since_last_training} days passed since last training, "
-                f"which is less than the required minimum interval of {min_training_days} days."
+                f"Retraining skipped: All physical artifacts exist, and only {days_since_last_training} days passed "
+                f"since last training (minimum interval: {min_training_days} days)."
             )
             return False
 
@@ -168,7 +188,7 @@ def check_retrain_required(
             logger.info("Newer telemetry period detected and training interval met! Triggering ML retraining...")
             return True
 
-        logger.success(f"Current registered ML model for '{station_name}' is up to date. Training skipped.")
+        logger.success(f"Current ML model artifacts for '{station_name}' are present and up to date. Training skipped.")
         return False
 
     except sqlite3.Error as e:
@@ -209,17 +229,17 @@ def register_trained_model(
     last_ecowitt_ts = get_max_timestamp(env)
 
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
             
             cursor.execute(
-                "UPDATE ml_model_registry SET is_active = 0 WHERE station_id = ?",
+                f"UPDATE {env.db.ml_model_registry} SET is_active = 0 WHERE station_id = ?",
                 (station_id,)
             )
 
-            upsert_query = """
-            INSERT INTO ml_model_registry (
+            upsert_query = f"""
+            INSERT INTO {env.db.ml_model_registry} (
                 model_version, station_id, trained_at,
                 last_ecowitt_timestamp, train_samples_count, x_scaler_path, 
                 y_scaler_path, model_path, metrics_mse, is_active

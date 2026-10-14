@@ -43,7 +43,7 @@ def ensure_table_exists(env: WaidBoot) -> bool:
     @return True if table exists and is verified, False otherwise.
     """
     create_stmt = f"""
-    CREATE TABLE IF NOT EXISTS {env.ml_matches_table} (
+    CREATE TABLE IF NOT EXISTS {env.db.match_records} (
         timestamp TEXT PRIMARY KEY,
         
         temp_era5 REAL, 
@@ -63,12 +63,12 @@ def ensure_table_exists(env: WaidBoot) -> bool:
     """
 
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             conn.execute(create_stmt)
             conn.commit()
             cursor = conn.cursor()
             cursor.execute(
-                f"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{env.ml_matches_table}'"
+                f"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{env.db.match_records}'"
             )
             return cursor.fetchone()[0] == 1
     except sqlite3.Error as e:
@@ -280,10 +280,10 @@ def perform_matching_with_era5(env: WaidBoot, period: datetime) -> int:
     df_match = perform_matching_with_ecowitt(env, df_era5, period)
 
     # --- Synchronize into Central Feature Store using Explicit Queries ---
-    logger.info(f"Synchronizing aligned dataset into Feature Store: {env.ml_matches_table}")
+    logger.info(f"Synchronizing aligned dataset into Feature Store: {env.db.match_records}")
 
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
 
             start_date = period.strftime("%Y-%m-01 00:00:00")
@@ -293,16 +293,16 @@ def perform_matching_with_era5(env: WaidBoot, period: datetime) -> int:
             else:
                 end_date = (period + pd.offsets.MonthEnd(1)).strftime("%Y-%m-%d 23:59:59")
 
-            # Pulizia preventiva del range temporale
+            # Preventive cleanup of the temporal range
             cursor.execute(
-                f"DELETE FROM {env.ml_matches_table} WHERE timestamp >= ? AND timestamp <= ?",
+                f"DELETE FROM {env.db.match_records} WHERE timestamp >= ? AND timestamp <= ?",
                 (start_date, end_date),
             )
             deleted_rows = cursor.rowcount
             if deleted_rows > 0:
-                logger.warning(f"Cleared {deleted_rows} overlapping historical rows from {env.ml_matches_table}.")
+                logger.warning(f"Cleared {deleted_rows} overlapping historical rows from {env.db.match_records}.")
 
-            # Preparazione dei record convertendo i NaN in None (gestiti come NULL da SQLite)
+            # Prepare records converting NaNs to None (handled as NULL by SQLite)
             records = []
             for _, row in df_match.iterrows():
                 ts = pd.to_datetime(row["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
@@ -322,9 +322,9 @@ def perform_matching_with_era5(env: WaidBoot, period: datetime) -> int:
                     row.get("rain_eco") if pd.notnull(row.get("rain_eco")) else None,
                 ))
 
-            # Inserimento esplicito con query parametrizzata
+            # Explicit insertion with parameterized query
             insert_query = f"""
-                INSERT OR REPLACE INTO {env.ml_matches_table} (
+                INSERT OR REPLACE INTO {env.db.match_records} (
                     timestamp,
                     temp_era5, pres_era5, rh_era5, wind_era5, solar_era5, rain_era5,
                     temp_eco, pres_eco, rh_eco, wind_eco, solar_eco, rain_eco
@@ -335,7 +335,7 @@ def perform_matching_with_era5(env: WaidBoot, period: datetime) -> int:
             conn.commit()
 
         logger.success(
-            f"Feature Store table '{env.ml_matches_table}' updated! "
+            f"Feature Store table '{env.db.match_records}' updated! "
             f"Inserted {len(records)} synchronized records."
         )
         return WaidExit.SUCCESS
@@ -370,7 +370,7 @@ def main() -> int:
         args = parser.parse_args()
 
         if not ensure_table_exists(env):
-            logger.error(f"Match table '{env.ml_matches_table}' missing or initialization failed.")
+            logger.error(f"Match table '{env.db.match_records}' missing or initialization failed.")
             return WaidExit.DATA_FAIL
 
         result = perform_matching_with_era5(env, args.period)

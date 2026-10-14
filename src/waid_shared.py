@@ -99,15 +99,15 @@ def fetch_and_resample_ecowitt(
     @param end_date End window string for data extraction.
     @return Processed and resampled pandas DataFrame containing hourly sensor data.
     """
-    logger.info(f"Connecting to Ecowitt Database: {env.waid_db}")
-    if not Path(env.waid_db).exists():
-        raise RuntimeError(f"WAID DB file not found at: {env.waid_db}")
+    logger.info(f"Connecting to Ecowitt Database: {env.waid_db_file}")
+    if not Path(env.waid_db_file).exists():
+        raise RuntimeError(f"WAID DB file not found at: {env.waid_db_file}")
 
     try:
         logger.info(
             f"Querying Ecowitt DB for window: [{start_date}] to [{end_date}]"
         )
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             query = f"""
                 SELECT
                     timestamp, 
@@ -117,7 +117,7 @@ def fetch_and_resample_ecowitt(
                     wind_m_s,
                     solar_rad_w_m2,
                     hourly_rain_mm
-                FROM {env.ecowitt_table}
+                FROM {env.db.ecowitt_records}
                 WHERE timestamp >= ? AND timestamp <= ?
             """
             df_eco_raw = pd.read_sql_query(
@@ -248,13 +248,13 @@ def get_station_metadata(
     sensor_specs = NOMINAL_SENSOR_SPECS.copy()
 
     try:
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """
+                f"""
                 SELECT station_id, station_name, elevation_m, min_training_days, 
                        retrain_window_days, sensor_specs 
-                FROM station_metadata 
+                FROM {env.db.station_metadata} 
                 LIMIT 1
             """
             )
@@ -347,7 +347,7 @@ def apply_physics_guardrails(
             threshold = res / 2.0
             val = np.where(val < threshold, 0.0, val)
 
-        # Quantization to sensor resolution
+        # Quantization matching hardware sensor resolution steps
         quantized = np.round(val / res) * res
         return quantized.item() if is_scalar else quantized
 
@@ -394,12 +394,12 @@ def apply_physics_guardrails(
                 theo_solar_future <= 0.0, 0.0, np.minimum(col, theo_solar_future)
             )
 
-        # C) Noise Suppression selective zero-clipping
+        # C) Noise suppression via selective zero clipping threshold
         if feat in ["wind", "rain", "solar"]:
             threshold = res / 2.0
             col = np.where(col < threshold, 0.0, col)
 
-        # D) Precision Quantization
+        # D) Quantization for precision matching target decimal standards
         if feat in ["temp", "rh", "pres"]:
             preds[:, j] = np.round(col, decimals=1)
         else:

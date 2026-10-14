@@ -2,7 +2,7 @@
 set -e
 
 ##
-# @file build-docker.sh
+# @file build_docker.sh
 # @brief WAID Docker environment build and initialization script for Linux/WSL.
 # @details Ensures required local data, logs, and dbt directories exist before building Docker containers.
 # @author AF

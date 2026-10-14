@@ -1,15 +1,56 @@
 # 🌤️ WAID — Weather AI Direct Nowcasting
 
-**WAID (Weather AI Direct Nowcasting)** is an edge-native data engineering framework for hyper-local weather nowcasting, combining local telemetry (Ecowitt) with satellite/reanalysis datasets (ERA5) and deterministic solar physics using LSTM models. It is designed to be portable, running on ARM edge devices or conventional PCs/servers, and data can be consumed locally or via the cloud (Supabase/PostgreSQL) with Streamlit dashboards.
+# WAID (Weather AI Direct) - Technical Overview & Feature Summary
 
-**Key Characteristics of WAID:**
+## 1. Executive Overview
 
-* **Technological & Innovative**: Leverages AI (LSTM), Edge Computing, Data Engineering, and Deterministic Physics.
-* **Specific Target**: Likely engineers, developers, data scientists, advanced meteorology enthusiasts, agricultural enterprises, infrastructure managers, and smart cities.
-* **Problem Solved**: Bridges the "microclimate gap" of global models by offering precise, hyper-local nowcasting.
-* **Benefits**: Portability, efficiency (edge-native, lower overhead), robustness (offline capability, feedback loop), and physics-ML integration.
-* **Open Source/Community**: The GitHub repository (misteralex/waid) and case study suggest an open, technical approach.
-* **Live Dashboard**: A public Streamlit dashboard is already active (https://waid-analytics.streamlit.app/).
+**WAID (Weather AI Direct)** is an open-source framework for microclimate predictive intelligence. It ingests local weather station telemetry, embeds deterministic solar physics equations, trains site-specific models, and performs short-term hyperlocal nowcasting. All execution—from ingestion to diagnosis—runs edge-native on low-power hardware, delivering immediate operational value without cloud dependencies.
+
+---
+
+## 2. Core Project Pipeline
+
+$$\text{Local Telemetry} + \text{Solar Physics} \longrightarrow \text{Local Model} \longrightarrow \text{Nowcasting} \longrightarrow \text{Diagnosis \& Advisory} \longrightarrow \text{ERA5 Comparison}$$
+
+1. **Local Telemetry + Solar Physics**: Edge ingestion of real-time environmental sensors combined with deterministic astronomical solar radiation models.
+2. **Local Model**: On-device training and execution of light-footprint architectures tailored to local station dynamics.
+3. **Nowcasting**: Hyperlocal, short-term forecasting (e.g., 6-hour horizon) for temperature, humidity, and microclimate variables.
+4. **Diagnosis & Advisory**: Real-time evaluation of thermal risks, microclimate metrics (VPD, enthalpy, dew point), and operational recommendations.
+5. **ERA5 Comparison**: Retrospective alignment against Copernicus ERA5 reanalysis for post-hoc validation, calibration, and bias profiling.
+
+---
+
+## 3. Key Strengths & Architectural Highlights
+
+- **End-to-End Pipeline**: Not just a visual dashboard, but a complete data engineering lifecycle covering extraction, transformation, model training, inference, validation, and automated deployment.
+- **Edge-Native Architecture**: Fully functional offline. Model training and inference run locally on low-cost single-board computers (e.g., Raspberry Pi) to guarantee zero cloud dependency and low latency.
+- **Site-Specific Calibration**: Requires as little as two weeks of local telemetry to learn the unique microclimate footprint and thermal inertia of a specific station.
+- **Retrospective Context via ERA5**: ERA5 reanalysis data is used strictly as a macro-climatic context and historical benchmark for calibration and bias assessment, rather than a driver for real-time future predictions.
+- **Actionable Operational Value**: Generates automated diagnostic reports, real-time alerts, and advisory outputs, with designed readiness for constrained hardware control of external thermal devices.
+
+---
+
+## 4. Technical Innovation & Edge Value
+
+- **Physics-Informed ML Integration**: Combines empirical data-driven machine learning (LSTM time-series models) with deterministic physical laws (solar position and irradiance formulas) to eliminate non-physical predictions.
+- **System Efficiency**: Low memory and computational overhead, optimized for edge devices and MicroSD durability (e.g., utilizing RAM-based staging and controlled write cycles).
+- **Robustness & Autonomy**: Operating capability in offline or bandwidth-constrained environments, supported by local database buffering (SQLite/PostgreSQL) and lightweight orchestration.
+
+---
+
+## 5. Target Audience & Applications
+
+- **Data Engineers & MLOps Developers**: Seeking production-ready reference implementations of end-to-end edge data pipelines and physics-ML workflows.
+- **Precision Agriculture & Micro-Farming**: For frost prediction, heat stress monitoring, and optimized irrigation based on microclimate vapor pressure deficit (VPD).
+- **Smart Cities & Infrastructure Managers**: Monitoring localized thermal risk, HVAC optimization, and urban heat island microclimates.
+- **Advanced Meteorology Enthusiasts & Researchers**: For validating local station drift and comparing low-cost telemetry against high-resolution ERA5 reanalysis datasets.
+
+---
+
+## 6. Open Source Artifacts & Live Resources
+
+- **GitHub Repository**: [`misteralex/waid`](https://github.com/misteralex/waid) — Complete open-source codebase, data transformations, and model workflows.
+- **Live Analytics Dashboard**: [waid-analytics.streamlit.app](https://waid-analytics.streamlit.app/) — Interactive public application showcasing historical benchmarking, real-time station metrics, and diagnostic outputs.
 
 ---
 
@@ -142,11 +183,11 @@ For resource-constrained Edge/ARM deployments, WAID also provides a lightweight 
 
 Long-running operational daemon and retroactive simulation driver for the WAID pipeline. It coordinates scheduled execution loops and multi-period historical simulations by managing environment contexts and invoking waid_orchestrate_lab.py. It manages:
 
-- Initial environment validation through check_initial_setup_needed, verifying the presence of the waid_db SQLite database.
+- Initial environment validation through check_initial_setup_needed, verifying the presence of the waid_db_file SQLite database.
 - Automated historical backfill during first-time initialization when no existing database environment is detected.
 - Pipeline subprocess execution through run_pipeline, launching waid_orchestrate_lab.py in the appropriate backfill or incremental execution mode.
-- Historical time simulation through the WAID_MOCK_NOW environment variable, allowing retrospective and step-by-step simulations without modifying the host operating system clock.
-- Retroactive simulation mode through --retroactive, iterating through historical timestamp intervals defined by --mock-begin and --mock-end.
+- Historical time simulation through the WAID_RETRO_NOW environment variable, allowing retrospective and step-by-step simulations without modifying the host operating system clock.
+- Retroactive simulation mode through --retroactive, iterating through historical timestamp intervals defined by --retro-begin and --retro-end.
 - Incremental simulation execution at each historical step using --skip-ingestion-deploy.
 - Final publication after retroactive simulation through waid_08_1_viz_streamlit_app.
 - Continuous operational execution through a recurring loop based on env.scheduled_interval_hours, running incremental updates and ML forecasts and sleeping between scheduled executions.
@@ -214,7 +255,7 @@ The framework relies heavily on predefined environment variables to manage root 
   * `1`: Database reset.
   * `2`: Complete reset (reset all).
   * `3`: Force ML model training.
-* **`WAID_MOCK_NOW`**: Overrides the current system timestamp during simulations or backfilling to evaluate historic periods deterministically.
+* **`WAID_RETRO_NOW`**: Overrides the current system timestamp during simulations or backfilling to evaluate historic periods deterministically.
 
 ---
 
@@ -233,24 +274,24 @@ The scheduler operates as a long-running operational service or manages retroact
 On first boot, it verifies whether the SQLite database exists via `check_initial_setup_needed()`. If missing, it automatically triggers an initial historical `backfill` phase before entering the continuous operational loop at predefined intervals.
 
 * **Retroactive Simulation Mode (`--retroactive`)**:
-To simulate historical performance step-by-step across specific timelines, provide the required start and end timestamps using either `--mock-begin`/`--mock-end` or `--begin-period`/`--end-period`:
+To simulate historical performance step-by-step across specific timelines, provide the required start and end timestamps using either `--retro-begin`/`--retro-end` or `--begin-period`/`--end-period`:
 ```bash
 export WAID_SOURCE=/home/alex/waid
 export WAID_TIER_NAME=dev
-python src/waid_scheduler_lab.py --retroactive --mock-begin "2026-01-01 00:00:00" --mock-end "2026-01-05 00:00:00"
+python src/waid_scheduler_lab.py --retroactive --retro-begin "2026-01-01 00:00:00" --retro-end "2026-01-05 00:00:00"
 
 ```
 
 
-This mode executes the setup sequence, iterates through the specified interval using incremental steps, and dynamically assigns `WAID_MOCK_NOW` for each iteration.
+This mode executes the setup sequence, iterates through the specified interval using incremental steps, and dynamically assigns `WAID_RETRO_NOW` for each iteration.
 
 ### 2. Orchestration & Time Mocking (`waid_orchestrate_lab.py`)
 
-The core orchestrator coordinates individual pipeline stages. To test or execute the pipeline against a specific simulated point in time, propagate the `WAID_MOCK_NOW` environment variable directly from your terminal:
+The core orchestrator coordinates individual pipeline stages. To test or execute the pipeline against a specific simulated point in time, propagate the `WAID_RETRO_NOW` environment variable directly from your terminal:
 
 ```bash
 export WAID_SOURCE=/home/alex/waid
-export WAID_MOCK_NOW="2026-02-15 12:00:00"
+export WAID_RETRO_NOW="2026-02-15 12:00:00"
 python src/waid_orchestrate_lab.py --run-mode incremental
 
 ```

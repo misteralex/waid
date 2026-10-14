@@ -46,14 +46,14 @@ class PipelineRunner:
     @brief Handles execution of pipeline shell and dbt commands with logging and formatting.
     """
 
-    def __init__(self, env: WaidBoot, mock_now: str = None):
+    def __init__(self, env: WaidBoot, retro_now: str = None):
         """
         @brief Initializes the PipelineRunner with environment settings and optional mock timestamp.
         @param env The bootstrap configuration environment instance (WaidBoot).
-        @param mock_now Simulated timestamp string for retroactive execution (YYYY-MM-DD HH:MM:SS).
+        @param retro_now Simulated timestamp string for retroactive execution (YYYY-MM-DD HH:MM:SS).
         """
         self.env = env
-        self.mock_now = mock_now
+        self.retro_now = retro_now
 
     def get_dbt_base_args(self) -> list[str]:
         """
@@ -70,8 +70,8 @@ class PipelineRunner:
             "max_bias_rain": float(self.env.max_bias_rain),
         }
 
-        if self.mock_now and str(self.mock_now).lower() not in ("none", ""):
-            dbt_vars_dict["waid_mock_now"] = str(self.mock_now)
+        if self.retro_now and str(self.retro_now).lower() not in ("none", ""):
+            dbt_vars_dict["waid_retro_now"] = str(self.retro_now)
 
         profiles_dir = str(
             getattr(
@@ -125,23 +125,23 @@ class PipelineRunner:
         logger.info(f"Request from: {caller_name}")
         logger.debug(f"{' '.join(command)}")
 
-        if self.mock_now:
+        if self.retro_now:
             logger.info(
-                f"[MOCK_MODE] Running with WAID_MOCK_NOW={self.mock_now}"
+                f"[RETRO_MODE] Running with WAID_RETRO_NOW={self.retro_now}"
             )
 
         proc_env = os.environ.copy()
-        if self.mock_now:
-            proc_env["WAID_MOCK_NOW"] = self.mock_now
+        if self.retro_now:
+            proc_env["WAID_RETRO_NOW"] = self.retro_now
         else:
-            proc_env.pop("WAID_MOCK_NOW", None)
+            proc_env.pop("WAID_RETRO_NOW", None)
 
         python_bin = str(sys.executable)
         cmd = list(command)
         if cmd[0] == "python":
             cmd[0] = python_bin
         elif cmd[0] == "dbt":
-            cmd[0] = self.env.dbt_bin
+            cmd[0] = self.env.dbt_bin_file
 
         process = subprocess.Popen(
             cmd,
@@ -174,28 +174,28 @@ class PipelineRunner:
 # ==============================================================================
 
 
-def should_skip_ml_inference(env: WaidBoot, mock_now: str = None) -> bool:
+def should_skip_ml_inference(env: WaidBoot, retro_now: str = None) -> bool:
     """
     @brief Checks database state using get_last_inference_datetime to determine
            if ML model execution can be bypassed.
     @param env WaidBoot configuration instance.
-    @param mock_now Optional simulated current timestamp string.
+    @param retro_now Optional simulated current timestamp string.
     @return True if the last valid forecast is less than 6 hours old, False otherwise.
     """
-    db_path = Path(env.waid_db)
+    db_path = Path(env.waid_db_file)
     if not db_path.exists():
         logger.info("Database file not found. Full ML execution required.")
         return False
 
-    last_ml_dt = get_last_inference_datetime(db_path, table_name="inference_forecasts")
+    last_ml_dt = get_last_inference_datetime(db_path, table_name=env.db.inference_forecast)
 
     if last_ml_dt is None:
         logger.info("No valid prior ML predictions found in DB. Full ML execution required.")
         return False
 
-    if mock_now and str(mock_now).lower() not in ("none", ""):
+    if retro_now and str(retro_now).lower() not in ("none", ""):
         try:
-            current_dt = datetime.strptime(mock_now, "%Y-%m-%d %H:%M:%S")
+            current_dt = datetime.strptime(retro_now, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             current_dt = datetime.now()
     else:
@@ -253,8 +253,8 @@ def waid_mock_update_ecowitt(runner: PipelineRunner, args: list) -> int:
     @return Process return code integer.
     """
     cmd_args = list(args)
-    if runner.mock_now and "--mock-now" not in cmd_args:
-        cmd_args.extend(["--mock-now", runner.mock_now])
+    if runner.retro_now and "--retro-now" not in cmd_args:
+        cmd_args.extend(["--retro-now", runner.retro_now])
 
     return runner.run_command(
         ["python", str(runner.env.tools_dir / "utils/waid_mock_update_ecowitt.py"), *cmd_args]
@@ -363,7 +363,9 @@ def waid_02_2_dbt_staging_ecowitt(runner: PipelineRunner, args: list) -> int:
     period_val = args[args.index("--period") + 1] if "--period" in args else None
 
     code = runner.run_command(
-        ["dbt", "run", "--select", "stg_ecowitt"] + runner.get_dbt_base_args(),
+        [   "dbt", "run", 
+            "--select", runner.env.db.stg_ecowitt
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
         period=period_val,
     )
@@ -371,7 +373,9 @@ def waid_02_2_dbt_staging_ecowitt(runner: PipelineRunner, args: list) -> int:
         return code
 
     return runner.run_command(
-        ["dbt", "test", "--select", "stg_ecowitt"] + runner.get_dbt_base_args(),
+        [   "dbt", "test", 
+            "--select", runner.env.db.stg_ecowitt
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
         period=period_val,
     )
@@ -399,7 +403,9 @@ def waid_03_2_dbt_matches(runner: PipelineRunner, args: list) -> int:
     period_val = args[args.index("--period") + 1] if "--period" in args else None
 
     code = runner.run_command(
-        ["dbt", "run", "--select", "source:external_raw.match_records"] + runner.get_dbt_base_args(),
+        [   "dbt", "run", "--select", 
+            "source:external_raw." + runner.env.db.match_records
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
         period=period_val,
     )
@@ -407,7 +413,9 @@ def waid_03_2_dbt_matches(runner: PipelineRunner, args: list) -> int:
         return code
 
     return runner.run_command(
-        ["dbt", "test", "--select", "source:external_raw.match_records"] + runner.get_dbt_base_args(),
+        [   "dbt", "test", "--select", 
+            "source:external_raw." + runner.env.db.match_records
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
         period=period_val,
     )
@@ -423,7 +431,9 @@ def waid_03_3_dbt_matches_bias(runner: PipelineRunner, args: list) -> int:
     period_val = args[args.index("--period") + 1] if "--period" in args else None
 
     code = runner.run_command(
-        ["dbt", "run", "--select", "int_matches_bias"] + runner.get_dbt_base_args(),
+        [   "dbt", "run", "--select", 
+            "source:external_raw." + runner.env.db.int_matches_bias
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
         period=period_val,
     )
@@ -431,7 +441,9 @@ def waid_03_3_dbt_matches_bias(runner: PipelineRunner, args: list) -> int:
         return code
 
     return runner.run_command(
-        ["dbt", "test", "--select", "int_matches_bias"] + runner.get_dbt_base_args(),
+        [   "dbt", "test", "--select", 
+            "source:external_raw." + runner.env.db.int_matches_bias
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
         period=period_val,
     )
@@ -457,7 +469,9 @@ def waid_04_1_setup_metadata(runner: PipelineRunner, args: list) -> int:
     @return Process return code integer.
     """
     code = runner.run_command(
-        ["dbt", "run", "--select", "station_metadata", "--full-refresh"] + runner.get_dbt_base_args(),
+        [   "dbt", "run", "--select", 
+            runner.env.db.station_metadata, "--full-refresh"
+        ] + runner.get_dbt_base_args(),
         is_dbt=True,
     )
     if code != runner.env.waid_exit.SUCCESS:
@@ -514,8 +528,8 @@ def waid_06_1_inference_forecast(runner: PipelineRunner, args: list) -> int:
         str(runner.env.tools_dir / "waid_06_1_inference_forecast.py"),
         *args,
     ]
-    if runner.mock_now and "--mock-now" not in cmd:
-        cmd.extend(["--mock-now", runner.mock_now])
+    if runner.retro_now and "--retro-now" not in cmd:
+        cmd.extend(["--retro-now", runner.retro_now])
 
     return runner.run_command(cmd)
 
@@ -527,7 +541,7 @@ def waid_06_2_inference_stats(runner: PipelineRunner) -> int:
     @return Process return code integer.
     """
     return runner.run_command(
-        ["dbt", "run", "--select", "inference_stats"] + runner.get_dbt_base_args(),
+        ["dbt", "run", "--select", runner.env.db.inference_stats] + runner.get_dbt_base_args(),
         is_dbt=True,
     )
 
@@ -539,7 +553,9 @@ def waid_06_3_dbt_inference_quality(runner: PipelineRunner) -> int:
     @return Process return code integer.
     """
     return runner.run_command(
-        ["dbt", "run", "--select", "+inference_quality", "--full-refresh"] + runner.get_dbt_base_args(),
+        [   "dbt", "run", "--select", 
+            "+" + runner.env.db.inference_quality, "--full-refresh"
+        ] + runner.get_dbt_base_args(), 
         is_dbt=True,
     )
 
@@ -555,8 +571,8 @@ def waid_06_4_inference_quality(runner: PipelineRunner, args: list) -> int:
         "python",
         str(runner.env.tools_dir / "waid_06_4_inference_quality.py"),
     ]
-    if runner.mock_now and "--mock-now" not in args:
-        cmd.extend(["--mock-now", runner.mock_now])
+    if runner.retro_now and "--retro-now" not in args:
+        cmd.extend(["--retro-now", runner.retro_now])
 
     return runner.run_command(cmd)
 
@@ -572,8 +588,8 @@ def waid_07_1_export_deploy_db(runner: PipelineRunner, args: list) -> int:
         "python",
         str(runner.env.tools_dir / "waid_07_1_export_deploy_db.py"),
     ]
-    if runner.mock_now and "--mock-now" not in args:
-        cmd.extend(["--mock-now", runner.mock_now])
+    if runner.retro_now and "--retro-now" not in args:
+        cmd.extend(["--retro-now", runner.retro_now])
 
     return runner.run_command(cmd)
 
@@ -690,10 +706,6 @@ def run_step_sequence(
 
 
 def parse_and_validate_arguments():
-    """
-    @brief Parses and validates command-line flags and parameters.
-    @return Tuple containing (parsed_arguments, extra_passthrough_arguments).
-    """
     parser = argparse.ArgumentParser(description="WAID Pipeline Orchestrator")
 
     parser.add_argument(
@@ -713,7 +725,7 @@ def parse_and_validate_arguments():
         help="Skip ingestion, ML training, and deploy/viz steps (executes inference & quality sequence only)",
     )
     parser.add_argument(
-        "--mock-now",
+        "--retro-now",
         type=str,
         default=None,
         help="Simulated current timestamp for retroactive execution (YYYY-MM-DD HH:MM:SS)",
@@ -722,7 +734,7 @@ def parse_and_validate_arguments():
         "--start-from",
         type=str,
         default=None,
-        help="Start execution directly from a specific step name or suffix (e.g., waid_07_1, 07_1, waid_03_1_match_datasets)",
+        help="Start execution directly from a specific step name or suffix",
     )
     parser.add_argument(
         "--period",
@@ -745,51 +757,13 @@ def parse_and_validate_arguments():
 
     parsed_args, extra_passthrough_args = parser.parse_known_args()
 
-    unrecognized = [
-        arg for arg in extra_passthrough_args if arg.startswith("-")
-    ]
-    if unrecognized:
-        sys.stderr.write(
-            f"Error: Unrecognized option(s) or typo in flags: {', '.join(unrecognized)}\n"
-        )
-        sys.exit(2)
+    # Check --period format if provided or use default mode 
+    parsed_args.is_standalone = not (parsed_args.period is not None)
 
     period_pattern = re.compile(r"^\d{4}-\d{2}$")
 
     if not parsed_args.period and parsed_args.run_mode == "incremental":
         parsed_args.period = datetime.now(timezone.utc).strftime("%Y-%m")
-
-    if parsed_args.period and not period_pattern.match(parsed_args.period):
-        sys.stderr.write(
-            f"Error: Invalid --period format '{parsed_args.period}'. Expected YYYY-MM.\n"
-        )
-        sys.exit(2)
-
-    if parsed_args.begin_period and not period_pattern.match(
-        parsed_args.begin_period
-    ):
-        sys.stderr.write(
-            f"Error: Invalid --begin-period format '{parsed_args.begin_period}'. Expected YYYY-MM.\n"
-        )
-        sys.exit(2)
-
-    if parsed_args.end_period and not period_pattern.match(
-        parsed_args.end_period
-    ):
-        sys.stderr.write(
-            f"Error: Invalid --end-period format '{parsed_args.end_period}'. Expected YYYY-MM.\n"
-        )
-        sys.exit(2)
-
-    if parsed_args.run_mode == "backfill":
-        start_p = parsed_args.begin_period or parsed_args.period
-        end_p = parsed_args.end_period or parsed_args.period
-
-        if not start_p or not end_p:
-            sys.stderr.write(
-                "Error: Backfill mode requires --period YYYY-MM (or both --begin-period and --end-period).\n"
-            )
-            sys.exit(2)
 
     return parsed_args, extra_passthrough_args
 
@@ -802,9 +776,9 @@ def main() -> int:
     parsed_args, extra_passthrough_args = parse_and_validate_arguments()
 
     env = WaidBoot()
-    runner = PipelineRunner(env, mock_now=parsed_args.mock_now)
+    runner = PipelineRunner(env, retro_now=parsed_args.retro_now)
 
-    db_path = env.waid_db
+    db_path = env.waid_db_file
     
     if parsed_args.skip_ingestion_ml_deploy and not Path(db_path).exists():
         logger.warning(
@@ -814,7 +788,7 @@ def main() -> int:
 
     if env.waid_sim_mode:
         logger.warning(
-            f"Simulation mode active. Running mock data generation using mock database ({env.waid_db})"
+            f"Simulation mode active. Running mock data generation using mock database ({env.waid_db_file})"
         )
 
     if parsed_args.skip_ingestion_ml_deploy:
@@ -933,7 +907,11 @@ def main() -> int:
         ])
 
     # 3. ML & Inference Stage
-    skip_ml_inference = should_skip_ml_inference(env, mock_now=parsed_args.mock_now)
+    if parsed_args.is_standalone:
+        logger.warning("Standalone mode detected. Skipping ML inference checks.")
+        skip_ml_inference = False
+    else:
+        skip_ml_inference = should_skip_ml_inference(env, retro_now=parsed_args.retro_now)
     
     if parsed_args.skip_ingestion_ml_deploy:
         master_steps.extend([

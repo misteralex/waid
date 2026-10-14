@@ -49,15 +49,15 @@ from waid_shared import (
 
 @task(name="Python Step Task")
 def run_python_step(
+    env: WaidBoot,
     script_name: str,
-    env_config: WaidBoot,
     extra_args: Optional[Union[List[str], str]] = None,
 ) -> int:
     """
     @brief Executes an external Python script step as a Prefect task.
 
     @param script_name Name of the Python script file to execute.
-    @param env_config Environment configuration object (WaidBoot).
+    @param env Environment configuration object (WaidBoot).
     @param extra_args Optional command line arguments to pass to the script.
     @return Subprocess exit code integer (0 on success).
     """
@@ -67,10 +67,10 @@ def run_python_step(
     exec_logger = get_run_logger()
     exec_logger.info(f"🔶 Step: {script_name}")
 
-    if env_config and hasattr(env_config, "tools_dir") and env_config.tools_dir:
-        working_dir = Path(env_config.tools_dir)
+    if env and hasattr(env, "tools_dir") and env.tools_dir:
+        working_dir = Path(env.tools_dir)
     else:
-        working_dir = Path(env_config.waid_source_dir)
+        working_dir = Path(env.waid_source_dir)
 
     script_path = working_dir / script_name
 
@@ -86,9 +86,9 @@ def run_python_step(
             cmd.append(str(extra_args))
 
     env_vars = None
-    if env_config and hasattr(env_config, "env_dict"):
+    if env and hasattr(env, "env_dict"):
         env_vars = os.environ.copy()
-        env_vars.update(env_config.env_dict)
+        env_vars.update(env.env_dict)
 
     exec_logger.info(f"Executing Python script in {working_dir}: {' '.join(cmd)}")
 
@@ -106,18 +106,18 @@ def run_python_step(
 
 @task(name="dbt Step", task_run_name="dbt {command} {select}")
 def run_dbt_step(
-    command: str,
+    env: WaidBoot = None,
+    command: str = "",
     select: str = "",
-    env_config: WaidBoot = None,
     full_refresh: bool = False,
     **kwargs,
 ) -> int:
     """
     @brief Executes a dbt CLI command as a Prefect task.
 
+    @param env Environment configuration object (WaidBoot).
     @param command dbt command to run (e.g., run, test, deps, compile).
     @param select Model selector string for dbt execution.
-    @param env_config Environment configuration object (WaidBoot).
     @param full_refresh Flag to append --full-refresh to dbt command.
     @return Subprocess return code integer (0 on success).
     """
@@ -125,13 +125,16 @@ def run_dbt_step(
     exec_logger = get_run_logger()
     exec_logger.info(f"🔶 Step: dbt {command} {select_str}".strip())
 
+    if command not in ["run", "test", "deps", "compile", "run-operation", "clean"]:
+        raise ValueError(f"Unsupported dbt command: {command}")
+
     cmd = [
-        str(env_config.dbt_bin),
+        str(env.dbt_bin_file),
         command,
         "--project-dir",
-        str(env_config.dbt_dir),
+        str(env.dbt_dir),
         "--profiles-dir",
-        str(env_config.dbt_profiles_dir),
+        str(env.dbt_profiles_dir),
     ]
 
     if full_refresh:
@@ -145,11 +148,11 @@ def run_dbt_step(
             cmd.extend(["--select", select])
 
     env_vars = os.environ.copy()
-    if env_config and hasattr(env_config, "env_dict"):
-        env_vars.update(env_config.env_dict)
+    if env and hasattr(env, "env_dict"):
+        env_vars.update(env.env_dict)
 
     result = subprocess.run(
-        cmd, cwd=str(env_config.dbt_dir), env=env_vars, check=False, text=True
+        cmd, cwd=str(env.dbt_dir), env=env_vars, check=False, text=True
     )
 
     if result.returncode != 0:
@@ -173,9 +176,9 @@ def ensure_dbt_setup(env: WaidBoot) -> int:
     if not target_manifest.exists():
         exec_logger = get_run_logger()
         exec_logger.info("dbt manifest target missing. Running minimum dbt environment initialization...")
-        exit_code = run_dbt_step("deps", "", env)
+        exit_code = run_dbt_step(env, "deps", "")
         if exit_code == 0:
-            exit_code = run_dbt_step("compile", "", env)
+            exit_code = run_dbt_step(env, "compile", "")
         return exit_code
     return 0
 
@@ -198,21 +201,21 @@ def data_ingestion_flow(
     @return Exit status code integer (0 if successful).
     """
     exit_code = run_python_step(
-        "waid_01_1_ingest_ecowitt.py", env, extra_args=period_args
+        env, "waid_01_1_ingest_ecowitt.py", extra_args=period_args
     )
     if exit_code == 0:
         exit_code = run_python_step(
-            "waid_01_2_ingest_era5.py", env, extra_args=period_args
+            env, "waid_01_2_ingest_era5.py", extra_args=period_args
         )
 
     if exit_code == 0:
         exit_code = run_python_step(
-            "waid_01_3_profile_era5.py", env, extra_args=period_args
+            env, "waid_01_3_profile_era5.py", extra_args=period_args
         )
 
     if exit_code == 0:
         exit_code = run_python_step(
-            "waid_02_1_sync_ecowitt.py", env, extra_args=period_args
+            env, "waid_02_1_sync_ecowitt.py", extra_args=period_args
         )
 
     return exit_code
@@ -231,46 +234,46 @@ def data_preparation_flow(
     @return Exit status code integer (0 if successful).
     """
     # 1. dbt Setup Steps
-    exit_code = run_dbt_step("clean", "", env)
+    exit_code = run_dbt_step(env, "clean", "")
 
     if exit_code == 0:
-        exit_code = run_dbt_step("deps", "", env)
+        exit_code = run_dbt_step(env, "deps", "")
 
     if exit_code == 0:
-        exit_code = run_dbt_step("compile", "", env)
+        exit_code = run_dbt_step(env, "compile", "")
 
     if exit_code == 0:
-        exit_code = run_dbt_step("run-operation", "dump_vars", env)
+        exit_code = run_dbt_step(env, "run-operation", "dump_vars")
 
     # 2. dbt Staging & Tests
-    exit_code = run_dbt_step("run", "stg_ecowitt", env)
+    exit_code = run_dbt_step(env, "run", env.db.stg_ecowitt)
 
     if exit_code == 0:
-        exit_code = run_dbt_step("test", "stg_ecowitt", env)
+        exit_code = run_dbt_step(env, "test", env.db.stg_ecowitt)
 
     if exit_code == 0:
         exit_code = run_python_step(
-            "waid_03_1_match_datasets.py", env, extra_args=period_args
+            env, "waid_03_1_match_datasets.py", extra_args=period_args
         )
 
     if exit_code == 0:
-        exit_code = run_dbt_step("run", "source:external_raw.match_records", env)
+        exit_code = run_dbt_step(env, "run", "source:external_raw." + env.db.match_records)
 
     if exit_code == 0:
-        exit_code = run_dbt_step("test", "source:external_raw.match_records", env)
+        exit_code = run_dbt_step(env, "test", "source:external_raw." + env.db.match_records)
 
     if exit_code == 0:
-        exit_code = run_dbt_step("run", "int_matches_bias", env)
+        exit_code = run_dbt_step(env, "run", env.db.int_matches_bias)
 
     if exit_code == 0:
-        exit_code = run_dbt_step("test", "int_matches_bias", env)
+        exit_code = run_dbt_step(env, "test", env.db.int_matches_bias)
 
     if exit_code == 0:
-        exit_code = run_dbt_step("run", "station_metadata", env, full_refresh=True)
+        exit_code = run_dbt_step(env, "run", env.db.station_metadata, full_refresh=True)
 
     if exit_code == 0:
         exit_code = run_python_step(
-            "waid_04_1_setup_specs.py", env, extra_args=period_args
+            env, "waid_04_1_setup_specs.py", extra_args=period_args
         )
 
     return exit_code
@@ -294,34 +297,34 @@ def ml_and_inference_flow(
     # Always execute ML Tensors and Model Training to guarantee data freshness and accuracy
     flow_logger.info("Executing ML Tensors and Model Training (05_1, 05_2, 05_3)...")
     exit_code = run_python_step(
-        "waid_05_1_ml_tensors.py", env, extra_args=period_args
+        env, "waid_05_1_ml_tensors.py", extra_args=period_args
     )
     if exit_code == 0:
-        exit_code = run_python_step("waid_05_2_ml_train.py", env)
+        exit_code = run_python_step(env, "waid_05_2_ml_train.py")
     if exit_code == 0:
-        exit_code = run_python_step("waid_05_3_ml_sanity_check.py", env)
+        exit_code = run_python_step(env, "waid_05_3_ml_sanity_check.py")
 
     # Invoke Inference Forecast with full model execution
     if exit_code == 0:
         inf_args = list(period_args) if period_args else []
         exit_code = run_python_step(
-            "waid_06_1_inference_forecast.py", env, extra_args=inf_args
+            env, "waid_06_1_inference_forecast.py", extra_args=inf_args
         )
 
     if exit_code == 0:
-        exit_code = run_dbt_step("run", "inference_stats", env)
+        exit_code = run_dbt_step(env, "run", env.db.inference_stats)
 
     # Inference Quality (Isolated Full Refresh)
     if exit_code == 0:
         exit_code = run_dbt_step(
-            "run", "+inference_quality", env, full_refresh=True
+            env, "run", "+" + env.db.inference_quality, full_refresh=True
         )
 
     if exit_code == 0:
-        exit_code = run_python_step("waid_06_4_inference_quality.py", env)
+        exit_code = run_python_step(env, "waid_06_4_inference_quality.py")
 
     if exit_code == 0:
-        exit_code = run_python_step("waid_07_1_export_deploy_db.py", env)
+        exit_code = run_python_step(env, "waid_07_1_export_deploy_db.py")
 
     return exit_code
 
@@ -335,11 +338,11 @@ def viz_and_docs_flow(env: WaidBoot) -> int:
     @return Exit status code integer (0 if successful).
     """
     exit_code = run_python_step(
-        "waid_08_1_viz_streamlit_app.py", env, extra_args=["--deploy"]
+        env, "waid_08_1_viz_streamlit_app.py", extra_args=["--deploy"]
     )
 
     if exit_code == 0:
-        exit_code = run_python_step("waid_08_2_doc_dbt_deploy.py", env)
+        exit_code = run_python_step(env, "waid_08_2_doc_dbt_deploy.py")
 
     return exit_code
 
@@ -399,7 +402,7 @@ def waid_main_flow(
         should_skip_ingestion = skip_ingestion or parsed_skip
         should_force_retrain = force_retrain or parsed_force_retrain
 
-        db_path = env.waid_db
+        db_path = env.waid_db_file
         if should_skip_ingestion and (not db_path or not Path(db_path).exists()):
             logger.warning(
                 f"Cannot skip Data Ingestion / Data Update. Required path: {db_path}"

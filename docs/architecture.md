@@ -158,7 +158,7 @@ To ensure high availability and mobile stability, operational outputs are extrac
  The pipeline supports both **forward operational execution** and **retroactive historical execution**.
 
  - In normal operation, the scheduler periodically executes the pipeline and updates the latest forecast according to the configured scheduling interval. The system is designed to support frequent forecast updates, with **6-hour forecasting representing the intended operational horizon and update cadence**.
-- The **retroactive mode** allows the complete pipeline to be executed against historical periods prior to the current date. Through simulated timestamps such as `WAID_MOCK_NOW`, the system can reproduce the state of the pipeline at previous points in time without modifying the host operating system clock.
+- The **retroactive mode** allows the complete pipeline to be executed against historical periods prior to the current date. Through simulated timestamps such as `WAID_RETRO_NOW`, the system can reproduce the state of the pipeline at previous points in time without modifying the host operating system clock.
 
  Retroactive execution is particularly useful for **historical validation, model evaluation, backtesting, debugging, and reproducibility**.
 

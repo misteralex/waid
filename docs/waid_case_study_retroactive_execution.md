@@ -8,29 +8,29 @@ The WAID platform handles these operational anomalies through a deterministic **
 
 ## 🛠️ The Mechanics of Retroactive Execution
 
-When running in retroactive simulation mode, the scheduler isolates execution time by injecting `WAID_MOCK_NOW` at fixed step intervals (`WAID_MOCK_INTERVAL_HOURS=6`).
+When running in retroactive simulation mode, the scheduler isolates execution time by injecting `WAID_RETRO_NOW` at fixed step intervals (`WAID_RETRO_INTERVAL_HOURS=6`).
 
 ```bash
 # Retroactive simulation execution example
 python src/waid_scheduler_lab.py \
   --retroactive \
-  --mock-begin "2026-09-08 00:00:00" \
-  --mock-end "2026-09-08 23:00:00"
+  --retro-begin "2026-09-08 00:00:00" \
+  --retro-end "2026-09-08 23:00:00"
 
 ```
 
 ### Configuration Parameters
 
 ```text
-WAID_MOCK_NOW=None
-WAID_MOCK_INTERVAL_HOURS=6
+WAID_RETRO_NOW=None
+WAID_RETRO_INTERVAL_HOURS=6
 
 ```
 
 At each 6-hour interval step, the pipeline:
 
-1. Sets `WAID_MOCK_NOW` to the simulated operational timestamp.
-2. Re-evaluates local telemetry (Ecowitt) up to `WAID_MOCK_NOW`.
+1. Sets `WAID_RETRO_NOW` to the simulated operational timestamp.
+2. Re-evaluates local telemetry (Ecowitt) up to `WAID_RETRO_NOW`.
 3. Computes the deterministic solar physics features for the forecast window.
 4. Executes the LSTM inference engine to generate a physics-constrained 6-hour forecast horizon.
 5. Overwrites/upserts the operational forecast store (`inference_forecast`).
@@ -56,7 +56,7 @@ In this scenario, a permission block on the container's volume mount prevented t
 
 ### Scenario B: Reconciled Pipeline via Retroactive Execution
 ![alt text](image-cs-retroactive-scenario-b.png)
-After resolving the container I/O permissions, the retroactive scheduler was executed across the same 24-hour period (`WAID_MOCK_INTERVAL_HOURS=6`).
+After resolving the container I/O permissions, the retroactive scheduler was executed across the same 24-hour period (`WAID_RETRO_INTERVAL_HOURS=6`).
 
 * **Behavior:** The scheduler systematically re-stepped through the interval (00:00, 06:00, 12:00, 18:00), generating fresh inference tensors and injecting updated solar physics embeddings at each step.
 * **Impact:** The predictions dynamically adapted to each 6-hour step horizon, accurately tracking the diurnal temperature curve recorded by the Ecowitt station.
@@ -69,5 +69,5 @@ After resolving the container I/O permissions, the retroactive scheduler was exe
 ## 🔑 Key Takeaways & System Guardrails
 
 1. **Drift vs. Failure Differentiation:** A sharp spike in `Drift vs Bias` does not always indicate machine learning model degradation; it often serves as an operational health check alerting to pipeline stall or write blockages.
-2. **Deterministic Time Isolation:** Overriding time via `WAID_MOCK_NOW` allows full system backfills without altering host operating system clocks or corrupting database epoch indexes.
+2. **Deterministic Time Isolation:** Overriding time via `WAID_RETRO_NOW` allows full system backfills without altering host operating system clocks or corrupting database epoch indexes.
 3. **Auditability & Dissemination:** By executing the *Stage 08* ETL after a retroactive backfill, public-facing analytics layers (Streamlit Cloud) are seamlessly updated with verified, contiguous historical forecast data.

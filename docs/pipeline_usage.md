@@ -110,7 +110,7 @@ python src/waid_06_1_inference_forecast.py
 
 **Execution with simulated timestamp:**
 ```bash
-python src/waid_06_1_inference_forecast.py --mock-now "2060-02-01 12:00:00"
+python src/waid_06_1_inference_forecast.py --retro-now "2060-02-01 12:00:00"
 ```
 
 ### `waid_06_4_inference_quality.py`
@@ -194,7 +194,7 @@ python waid_orchestrate_lab.py [OPTIONS]
 | --start-from | Fast-forwards execution directly to a specific step function name. |
 | --period | Specifies the target period (YYYY-MM) for the run. |
 | --begin-period / --end-period | Defines the start and end date range for backfill mode. |
-| --mock-now | Injects a simulated timestamp (YYYY-MM-DD HH:MM:SS) for retroactive execution. |
+| --retro-now | Injects a simulated timestamp (YYYY-MM-DD HH:MM:SS) for retroactive execution. |
 
 ---
 
@@ -228,7 +228,7 @@ python waid_orchestrate_lab.py --start-from waid_06_1_inference_forecast
 #### 5. Simulation with Mock Time
 Useful for testing how the system performs using historical timestamps:
 ```bash
-python waid_orchestrate_lab.py --mock-now "2026-02-15 12:00:00"
+python waid_orchestrate_lab.py --retro-now "2026-02-15 12:00:00"
 ```
 
 ---
@@ -301,16 +301,16 @@ python waid_scheduler_lab.py
 Processes historical data for a specific time window. This bypasses the infinite loop and processes step-by-step using the provided timestamps.
 ```bash
 python waid_scheduler_lab.py --retroactive \
-    --mock-begin "2026-01-01 00:00:00" \
-    --mock-end "2026-01-31 23:59:59"
+    --retro-begin "2026-01-01 00:00:00" \
+    --retro-end "2026-01-31 23:59:59"
 ```
 
 ### Options Summary
 | Flag | Description |
 | :--- | :--- |
 | `--retroactive` | Enables batch mode to iterate through a historical timeframe. |
-| `--mock-begin` / `--begin-period` | Start timestamp for simulation (YYYY-MM-DD HH:MM:SS). |
-| `--mock-end` / `--end-period` | End timestamp for simulation (YYYY-MM-DD HH:MM:SS). |
+| `--retro-begin` / `--begin-period` | Start timestamp for simulation (YYYY-MM-DD HH:MM:SS). |
+| `--retro-end` / `--end-period` | End timestamp for simulation (YYYY-MM-DD HH:MM:SS). |
 
 ---
 

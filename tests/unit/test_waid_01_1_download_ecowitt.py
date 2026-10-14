@@ -1,10 +1,13 @@
-##
-# @file test_waid_01_1_ingest_ecowitt.py
-# @brief Unit tests for the Ecowitt automated data ingestor.
-# @details Uses pytest and unittest.mock to validate URL checks and file download logic
-#          without requiring an active network connection or actual file system operations.
-# @author AF
-# @date 2026
+#!/usr/bin/env python3
+
+"""
+@file test_waid_01_1_download_ecowitt.py
+@brief Unit tests for the Ecowitt automated data ingestor.
+@details Uses pytest and unittest.mock to validate URL checks and file download logic
+         without requiring an active network connection or actual file system operations.
+@author AF
+@date 2026
+"""
 
 import pytest
 import argparse
@@ -13,39 +16,44 @@ from pathlib import Path
 import sys
 from datetime import datetime
 
-# Assume the script is named waid_01_1_ingest_ecowitt.py
 from waid_01_1_ingest_ecowitt import check_url_exists, download_ecowitt_data
 
 class TestEcowittDownloader:
     
-    ##
-    # @brief Tests that check_url_exists returns True when server responds with 200.
+    """
+    @brief Test suite for Ecowitt data ingestion core functions.
+    """
+
     @patch("urllib.request.urlopen")
-    def test_check_url_exists_success(self, mock_urlopen):
+    def test_check_url_exists_success(self, mock_urlopen: MagicMock) -> None:
+        """
+        @brief Tests that check_url_exists returns True when server responds with HTTP 200.
+        @param mock_urlopen Mocked urlopen request object.
+        """
         mock_response = MagicMock()
         mock_response.status = 200
         mock_urlopen.return_value.__enter__.return_value = mock_response
         
         assert check_url_exists("http://192.168.1.1") is True
 
-    ##
-    # @brief Tests that check_url_exists returns False when an exception (e.g. timeout) occurs.
     @patch("urllib.request.urlopen")
-    def test_check_url_exists_failure(self, mock_urlopen):
+    def test_check_url_exists_failure(self, mock_urlopen: MagicMock) -> None:
+        """
+        @brief Tests that check_url_exists returns False when a connection exception occurs.
+        @param mock_urlopen Mocked urlopen request object raising an exception.
+        """
         mock_urlopen.side_effect = Exception("Connection error")
         
         assert check_url_exists("http://192.168.1.1") is False
 
-    ##
-    # @brief Tests the full download workflow, ensuring the file is accepted if size > 100 bytes.
     @patch("waid_01_1_ingest_ecowitt.check_url_exists")
-    @patch("subprocess.run")
-    def test_download_ecowitt_data_success(self, mock_subprocess, mock_check_url):
-        # Setup mocks
+    def test_download_ecowitt_data_success(self, mock_check_url: MagicMock) -> None:
+        """
+        @brief Tests the successful download workflow when size exceeds the minimum threshold.
+        @param mock_check_url Mocked URL accessibility checker.
+        """
         mock_check_url.return_value = True
-        mock_subprocess.return_value = MagicMock(returncode=0)
         
-        # Mock env and args
         mock_env = MagicMock()
         mock_env.ecowitt_dir = Path("/tmp")
         mock_env.waid_exit.SUCCESS = 0
@@ -57,26 +65,24 @@ class TestEcowittDownloader:
             timeout=30
         )
         
-        # Mock Path.exists and stat
         with patch.object(Path, 'exists', return_value=True), patch.object(Path, 'stat') as mock_stat:
             mock_stat.return_value.st_size = 200
             with patch.object(Path, 'rename') as mock_rename, patch.object(Path, 'unlink'):
-                
                 result = download_ecowitt_data(mock_env, mock_args)
                 assert result == 0
 
-    ##
-    # @brief Tests that the function returns a failure code when no data is available at the source.
     @patch("waid_01_1_ingest_ecowitt.check_url_exists")
-    def test_download_ecowitt_data_no_data(self, mock_check_url):
+    def test_download_ecowitt_data_no_data(self, mock_check_url: MagicMock) -> None:
+        """
+        @brief Tests that the function returns a failure code when no data is available at the source.
+        @param mock_check_url Mocked URL accessibility checker.
+        """
         mock_check_url.return_value = False
         
         mock_env = MagicMock()
         mock_env.waid_exit.SUCCESS = 0
         mock_env.waid_exit.DATA_FAIL = 1
         
-        # Facciamo in modo che il periodo corrisponda al mese corrente (agosto 2026)
-        # In questo modo evita il controllo "if not is_current_month and data_file.exists()"
         current_time = datetime.now()
         mock_args = argparse.Namespace(
             period=MagicMock(year=current_time.year, month=current_time.month),

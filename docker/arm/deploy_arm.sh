@@ -1,4 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/bash
+
+##
+# @file deploy_arm.sh
+# @brief Deployment script for WAID pipeline on ARM architecture.
+# @details Handles the entire deployment process for ARM-based targets.
+# @author AF
+# @date 2026
+
 set -e
 
 # Verify WAID_SOURCE consistency against actual script location (2 levels up)
@@ -27,7 +35,7 @@ set -a
 [ -f "${WAID_SOURCE}/config/waid.env" ] && source "${WAID_SOURCE}/config/waid.env"
 set +a
 
-# Fallback o validazione delle variabili di target ARM
+# Fallback or validation of ARM target variables
 ARM_USER="${WAID_ARM_USER:-waid}"
 RASP_IP="${WAID_ARM_IP:?CRITICAL ERROR: WAID_ARM_IP is not set in config/waid.env!}"
 RASP_DIR="${WAID_ARM_DIR:-/home/${ARM_USER}/waid}"
@@ -50,7 +58,28 @@ sqlite3 data/waid.db "VACUUM;"
 sqlite3 data/waid.db "PRAGMA integrity_check;"
 
 echo "=== 2. Building Docker ARM64 image ==="
-./docker/build-docker.sh arm
+
+# Check if Docker daemon is running; attempt to start it if inactive (WSL/Linux)
+if ! docker info >/dev/null 2>&1; then
+    echo "Docker daemon is not running. Attempting to start it via service..."
+    sudo service docker start
+    
+    # Wait a few seconds for the Docker socket to become available
+    for i in {1..10}; do
+        if docker info >/dev/null 2>&1; then
+            echo "Docker daemon successfully started."
+            break
+        fi
+        sleep 1
+    done
+    
+    if ! docker info >/dev/null 2>&1; then
+        echo "CRITICAL ERROR: Failed to start Docker daemon. Please start it manually."
+        exit 1
+    fi
+fi
+
+./docker/build_docker.sh arm
 
 echo "=== 2.1 Exporting Docker image ==="
 docker save waid_arm:latest | gzip > waid_pipeline_arm.tar.gz

@@ -1,7 +1,7 @@
 @echo off
 
 ##
-# @file build-docker.bat
+# @file build_docker.bat
 # @brief WAID Docker environment build and initialization script for Windows.
 # @details Ensures required local data, logs, and dbt directories exist before building Docker containers.
 # @author AF
