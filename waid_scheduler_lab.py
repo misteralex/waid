@@ -9,35 +9,29 @@
 @date 2026
 """
 
-import argparse
 import os
-import requests
-import websocket
-import sqlite3
-import subprocess
 import sys
-import time
-from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
-from loguru import logger
-from urllib.parse import urljoin
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import ( 
     WaidBoot,
     WError,
     WaidExit,
 )
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
-from waid_shared import (
+from src.waid_shared import (
     generate_period_range,
     get_last_inference_datetime,
 )
+
+import argparse
+import requests
+import websocket
+import sqlite3
+import subprocess
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from loguru import logger
+from urllib.parse import urljoin
 
 
 def check_initial_setup_needed(env: WaidBoot) -> bool:

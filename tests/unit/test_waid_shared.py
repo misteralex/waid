@@ -12,21 +12,15 @@
 import os
 import sys
 from pathlib import Path
-import numpy as np
-import pandas as pd
-from unittest.mock import patch, mock_open
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-
-from waid_shared import (
+from src.waid_shared import (
     calculate_theoretical_solar_radiation,
     apply_physics_guardrails,
     generate_period_range,
     is_in_docker
 )
+import numpy as np
+import pandas as pd
+from unittest.mock import patch, mock_open
 
 
 def test_calculate_theoretical_solar_radiation() -> None:

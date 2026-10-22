@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_02_1_sync_ecowitt.py
+@file waid_02_2_sync_ecowitt.py
 @brief Batch aggregator for Ecowitt CSV files into a central SQLite database.
 @details Scans the data folder for CSVs, converts local time (configured via TZ) 
          to UTC timestamps, and performs idempotent upserts into SQLite.
@@ -9,25 +9,18 @@
 @date 2026
 """
 
-import os
-import sys
-import sqlite3
-import argparse
-from pathlib import Path
-from datetime import datetime
-import pandas as pd
-from loguru import logger
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_period,
 )
+import sys
+import sqlite3
+import argparse
+from datetime import datetime
+import pandas as pd
+from loguru import logger
 
 
 def ensure_table_exists(env: WaidBoot) -> dict:
@@ -194,11 +187,10 @@ def sync_ecowitt_with_db(
     @return None
     """
     period: datetime = args.period
-    data_dir: Path = env.ecowitt_dir
 
-    if not data_dir.exists():
-        logger.error(f"Data folder does not exist at path: {data_dir}")
-        raise WError(f"Directory not found: {data_dir}", code=WaidExit.INPUT_FAIL)
+    if not env.ecowitt_dir.exists():
+        logger.error(f"Data folder does not exist at path: {env.ecowitt_dir}")
+        raise WError(f"Directory not found: {env.ecowitt_dir}", code=WaidExit.INPUT_FAIL)
 
     filename_prefix = f"{period.year}{period.month:02d}"
     current_time = datetime.now()
@@ -207,7 +199,7 @@ def sync_ecowitt_with_db(
         period.year == current_time.year and period.month == current_time.month
     )
     extension = ".csv" if is_current_month else ".full"
-    data_file = data_dir / f"{filename_prefix}{extension}"
+    data_file = env.ecowitt_dir / f"{filename_prefix}{extension}"
 
     logger.info(f"Looking for Ecowitt data file: {data_file}")
     if not data_file.exists():
@@ -251,18 +243,15 @@ def sync_ecowitt_with_db(
             cursor.execute(sql_query)
             total_added = cursor.rowcount
             conn.commit()
-
+            
         except sqlite3.Error as e:
-            logger.error(f"Database transaction error: {e}")
-            raise WError(
-                f"Synchronization failure. SQL Query: {sql_query}",
-                code=WaidExit.DATA_FAIL,
-            )
+            logger.error(f"Database transaction error: {e} | Synchronization failure. SQL Query: {sql_query}")
+            return WaidExit.DATA_FAIL
         finally:
             conn.execute("DROP TABLE IF EXISTS staging_ecowitt")
             conn.commit()
 
-    logger.info(f"Aggregation complete. Total new UTC records inserted: {total_added}")
+    logger.success(f"Aggregation complete. Total new UTC records inserted: {total_added}")
 
 
 def main() -> int:

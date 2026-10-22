@@ -9,25 +9,19 @@
 @date 2026
 """
 
-import os
-import argparse
-from datetime import datetime
-from pathlib import Path
-import sys
-import urllib.request
-import urllib.error
-from loguru import logger
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_period,
 )
+import argparse
+from datetime import datetime
+import sys
+import urllib.request
+import urllib.error
+from loguru import logger
+
 
 def check_url_exists(url: str, timeout: int = 30) -> bool:
     """
@@ -131,7 +125,7 @@ def download_ecowitt_data(
         existing_file.unlink()
     temp_file.rename(data_file)
     
-    logger.info(f"Successfully created: {data_file.name}")
+    logger.success(f"Successfully created: {data_file.name}")
     return env.waid_exit.SUCCESS
         
 

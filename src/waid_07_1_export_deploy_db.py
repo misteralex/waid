@@ -7,26 +7,24 @@
 @date 2026
 """
 
-import os
-import sys
-import sqlite3
-import pandas as pd
-from pathlib import Path
-from loguru import logger
-import argparse
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_mock_timestamp,
 )
+from src.waid_shared import (
+    check_db_table_exists,
+)
+import sys
+from pathlib import Path
+import sqlite3
+import pandas as pd
+from loguru import logger
+import argparse
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
+
 
 def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
     """Exports the prepared DataFrame directly to Supabase PostgreSQL database using UPSERT.
@@ -142,6 +140,26 @@ def export_to_supabase(env: WaidBoot, df: pd.DataFrame) -> None:
         raise WError(f"Supabase synchronization failed: {e}", code=WaidExit.DATA_FAIL)
 
 
+def validate_table_keys(conn: sqlite3.Connection, table_name: str, required_keys: list[str]) -> None:
+    """Validates that all required key columns exist in the specified table.
+
+    @param conn SQLite database connection.
+    @param table_name Name of the table to inspect.
+    @param required_keys List of required column names.
+    @return None
+    """
+    cursor = conn.cursor()
+    cursor.execute(f"PRAGMA table_info({table_name});")
+    columns = [row[1] for row in cursor.fetchall()]
+    
+    for key in required_keys:
+        if key not in columns:
+            raise WError(
+                f"Missing required key '{key}' in table '{table_name}' according to SSOT.",
+                code=WaidExit.CONFIG_FAIL
+            )
+            
+            
 def main() -> int:
     """Extracts operational forecast and quality metrics from lab DB and populates WAID_DB_DEPLOY_FILE.
     Optionally synchronizes data with Supabase if WAID_DEPLOY_MODE is set to 'cloud'.
@@ -179,7 +197,12 @@ def main() -> int:
         return WaidExit.DATA_FAIL
 
     logger.info(f"Connecting to lab database: {waid_db_dir}")
-    
+
+    if not check_db_table_exists(env, env.db.inference_forecast):
+        logger.warning(f"The table {env.db.inference_forecast} does not exist.")
+    if not check_db_table_exists(env, env.db.inference_quality):
+        logger.warning(f"The table {env.db.inference_quality} does not exist.")
+
     # Updated the query to correctly handle the composite key (timestamp, model_version)
     query = f"""
         SELECT
@@ -238,6 +261,19 @@ def main() -> int:
             t.timestamp ASC,
             t.model_version ASC
     """
+    
+    try:
+        with sqlite3.connect(waid_db_dir) as src_conn:
+            # Validate composite keys against SSOT expectations before joining
+            validate_table_keys(src_conn, env.db.inference_forecast, ["timestamp", "model_version"])
+            validate_table_keys(src_conn, env.db.inference_quality, ["timestamp", "model_version"])            
+            df = pd.read_sql_query(query, src_conn)
+    except WError as e:
+        logger.error(e)
+        return e.code
+    except Exception as e:
+        logger.error(f"Failed to read from lab database: {e}")
+        return WaidExit.DATA_FAIL
 
     try:
         with sqlite3.connect(waid_db_dir) as src_conn:

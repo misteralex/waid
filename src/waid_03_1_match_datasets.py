@@ -11,29 +11,23 @@
 @date 2026
 """
 
-import os
-import sys
-import sqlite3
-import argparse
-from pathlib import Path
-from datetime import datetime, timezone
-import numpy as np
-import pandas as pd
-import xarray as xr
-from loguru import logger
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_period,
 )
-
-from waid_shared import fetch_and_resample_ecowitt
+from src.waid_shared import (
+    fetch_and_resample_ecowitt,
+)
+import sys
+import sqlite3
+import argparse
+from datetime import datetime, timezone
+import numpy as np
+import pandas as pd
+import xarray as xr
+from loguru import logger
 
 
 def ensure_table_exists(env: WaidBoot) -> bool:
@@ -173,6 +167,9 @@ def perform_matching_with_ecowitt(
 
     # Calculate biases only for rows where ERA5 data is present
     df_with_era5 = df_match.dropna(subset=["temp_era5"])
+    
+    # Ensure df_with_era5 is an explicit copy to avoid SettingWithCopyWarning
+    df_with_era5 = df_with_era5.copy()
 
     if not df_with_era5.empty and env.debug_mode:
         df_with_era5["bias_temp"] = df_with_era5["temp_eco"] - df_with_era5["temp_era5"]

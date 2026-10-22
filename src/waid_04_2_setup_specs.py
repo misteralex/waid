@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_04_1_setup_specs.py
+@file waid_04_2_setup_specs.py
 @brief Hardware Sensor Specifications Setup and Profiling.
 @details Initializes and updates empirical sensor characteristics (resolution and deadbands) 
          for the core features within the station metadata table using shared utilities.
@@ -9,30 +9,22 @@
 @date 2026
 """
 
-import os
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
+from src.waid_shared import (
+    NOMINAL_SENSOR_SPECS,
+    get_station_metadata,
+)
 import sys
 import json
 import sqlite3
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from loguru import logger
 
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
-    WaidBoot,
-    WError,
-    WaidExit,
-)
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
-from waid_shared import (
-    NOMINAL_SENSOR_SPECS,
-    get_station_metadata,
-)
 
 def ensure_sensor_specs_column(env: WaidBoot) -> None:
     """

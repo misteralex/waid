@@ -21,33 +21,27 @@
 @date 2026
 """
 
-import os
-os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-
-import sys
-import argparse
-from loguru import logger
-from pathlib import Path
-from typing import Tuple, List
-
-import numpy as np
-import pandas as pd
-import joblib
-import sqlite3
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_period,
 )
+from src.waid_shared import (
+    calculate_theoretical_solar_radiation,
+)
+import os
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+import sys
+import argparse
+from loguru import logger
+from pathlib import Path
+from typing import Tuple, List
+import numpy as np
+import pandas as pd
+import joblib
+import sqlite3
 
-# Import shared utilities from Single Source of Truth
-from waid_shared import calculate_theoretical_solar_radiation
 
 # ==============================================================================
 # CORE DATA PROCESSING FUNCTIONS
@@ -344,8 +338,8 @@ def main() -> int:
             return result
             
         inspect_tensors(env, args)
-        logger.info(f"Raw 3D tensors saved under: {env.ml_tensors_dir}")
-        logger.info(f"Processed period: {args.period.strftime('%Y-%m')}")
+        logger.success(f"Raw 3D tensors saved under: {env.ml_tensors_dir}")
+        logger.success(f"Processed period: {args.period.strftime('%Y-%m')}")
         
     except WError as e:
         logger.error(e)

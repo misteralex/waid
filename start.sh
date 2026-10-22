@@ -21,7 +21,7 @@ show_usage() {
     echo "====================================="
 }
 
-# Load environment variables from boot.env if available
+# Load environment variables from config.boot.env if available
 if [ -f "config/boot.env" ]; then
     set -a
     source config/boot.env

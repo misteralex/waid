@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file test_waid_02_1_sync_ecowitt.py
+@file test_waid_02_2_sync_ecowitt.py
 @brief Unit tests for the Ecowitt batch aggregator and SQLite synchronizer.
 @details Uses pytest, tmp_path, and pandas to validate table schema generation,
          timestamp UTC conversion, and database synchronization logic without external I/O blocks.
@@ -17,7 +17,7 @@ from datetime import datetime
 import pandas as pd
 import sqlite3
 
-from waid_02_1_sync_ecowitt import (
+from waid_02_2_sync_ecowitt import (
     ensure_table_exists,
     process_timestamps_to_utc,
     report_gaps,
@@ -80,7 +80,7 @@ class TestEcowittSync:
         assert len(gaps) == 1
         assert gaps["missing_min"].iloc[0] == 3
 
-    @patch("waid_02_1_sync_ecowitt.ensure_table_exists")
+    @patch("waid_02_2_sync_ecowitt.ensure_table_exists")
     def test_sync_ecowitt_with_db_file_missing(self, mock_ensure: MagicMock, tmp_path: Path) -> None:
         """
         @brief Tests that WError is raised if the target CSV file does not exist.

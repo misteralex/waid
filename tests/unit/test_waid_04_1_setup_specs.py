@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file test_waid_04_1_setup_specs.py
+@file test_waid_04_2_setup_specs.py
 @brief Unit tests for hardware sensor resolution profiling and metadata updates.
 @details Uses pytest, tmp_path, and mock objects to validate table schema extensions,
          resolution estimation logic, and database updates without external dependencies.
@@ -16,7 +16,7 @@ import pandas as pd
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from waid_04_1_setup_specs import (
+from waid_04_2_setup_specs import (
     ensure_sensor_specs_column,
     estimate_mode_resolution,
     update_station_specs,

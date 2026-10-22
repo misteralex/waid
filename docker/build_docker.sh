@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Load environment variables from boot.env if available
+# Load environment variables from config.boot.env if available
 if [ -f "config/boot.env" ]; then
     set -a
     source config/boot.env

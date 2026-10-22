@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file waid_02_2_profile_era5.py
+@file waid_01_3_profile_era5.py
 @brief WAID ERA5 NetCDF Data Profiling and Catalog Helper.
 @details Validates the internal structure, dimensions, and variables of ERA5 files.
          Extracts a localized temporal slice based on coordinates to identify 
@@ -10,24 +10,19 @@
 @date 2026
 """
 
-import os
-import sys
-import argparse
-from pathlib import Path
-import pandas as pd
-import xarray as xr
-from loguru import logger
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_period,
 )
+import sys
+import argparse
+import pandas as pd
+import xarray as xr
+from loguru import logger
+
+
 
 def check_era5_data(env: WaidBoot, args: argparse.Namespace) -> int:
     """
@@ -113,6 +108,8 @@ def check_era5_data(env: WaidBoot, args: argparse.Namespace) -> int:
 def main() -> int:
     """
     Main execution entry point for ERA5 profiling.
+
+    @return Exit status code.
     """
     try:
         env = WaidBoot()

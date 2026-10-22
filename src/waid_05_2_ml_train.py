@@ -10,9 +10,16 @@
 @date 2026
 """
 
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
+from waid_shared import (
+    get_station_metadata,
+)
 import os
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-
 import sys
 import glob
 import sqlite3
@@ -28,19 +35,6 @@ from tensorflow.keras import Sequential, Input
 from tensorflow.keras.layers import LSTM, Dropout, Dense, Reshape 
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import StandardScaler
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
-    WaidBoot,
-    WError,
-    WaidExit,
-)
-
-# Import shared utilities from Single Source of Truth
-from waid_shared import get_station_metadata
 
 
 def denormalize_predictions(y_scaler: StandardScaler, preds_scaled: np.ndarray) -> np.ndarray:
@@ -61,15 +55,18 @@ def denormalize_predictions(y_scaler: StandardScaler, preds_scaled: np.ndarray) 
 
 
 def ensure_model_registry_schema(env: WaidBoot) -> None:
-    """Ensures ML model registry table exists before performing registration operations.
+    """Ensures ML model registry table exists with proper constraints before registration.
 
     @param env Initialized framework environment context (WaidBoot).
     @return None
     """
     station_id = env.ecowitt_station_id
     
+    # Drop and recreate to ensure PRIMARY KEY and ON CONFLICT constraints are aligned
+    drop_table_stmt = f"DROP TABLE IF EXISTS {env.db.ml_model_registry};"
+    
     create_model_registry_stmt = f"""
-    CREATE TABLE IF NOT EXISTS {env.db.ml_model_registry} (
+    CREATE TABLE {env.db.ml_model_registry} (
         model_version TEXT PRIMARY KEY,
         station_id TEXT NOT NULL,
         trained_at TEXT NOT NULL,
@@ -87,6 +84,8 @@ def ensure_model_registry_schema(env: WaidBoot) -> None:
         with sqlite3.connect(env.waid_db_file) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
+            # If the table has an old structure without a PK, recreate it clean
+            cursor.execute(drop_table_stmt)
             cursor.execute(create_model_registry_stmt)
             conn.commit()
     except sqlite3.Error as e:

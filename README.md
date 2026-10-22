@@ -10,7 +10,14 @@
 
 ## 2. Core Project Pipeline
 
-$$\text{Local Telemetry} + \text{Solar Physics} \longrightarrow \text{Local Model} \longrightarrow \text{Nowcasting} \longrightarrow \text{Diagnosis \& Advisory} \longrightarrow \text{ERA5 Comparison}$$
+$$
+\begin{aligned}
+\text{Local Telemetry} + \text{Solar Physics} &\longrightarrow \text{Local Model} \\
+&\longrightarrow \text{Nowcasting} \\
+&\longrightarrow \text{Diagnosis, Advisory} \\
+&\longrightarrow \text{ERA5 Comparison}
+\end{aligned}
+$$
 
 1. **Local Telemetry + Solar Physics**: Edge ingestion of real-time environmental sensors combined with deterministic astronomical solar radiation models.
 2. **Local Model**: On-device training and execution of light-footprint architectures tailored to local station dynamics.
@@ -101,8 +108,9 @@ Matches forecasts against observations, quantifies prediction error and bias, an
 #### Stage 04 — Station Specs & Setup
 Defines station-specific sensor characteristics, standardizes variable mappings and units, and establishes the metadata required for reliable downstream processing.
 
+```
 → sensor/station configuration → variable mapping → units → station metadata
-
+```
 #### Stage 05 — Machine Learning Tensors & Training
 Builds time-aware machine learning tensors from engineered meteorological features and trains the LSTM forecasting model.
 
@@ -310,18 +318,18 @@ The framework is organized into modular steps and orchestration utilities spanni
 
 ### Stage 02: Synchronization & Staging
 
-* **`waid_02_1_sync_ecowitt.py`**: Parses Ecowitt telemetry CSVs, normalizes timestamps to UTC, and performs safe `INSERT OR IGNORE` batch updates into SQLite via a temporary `staging_ecowitt` table using an epoch timestamp.
+* **`waid_02_2_sync_ecowitt.py`**: Parses Ecowitt telemetry CSVs, normalizes timestamps to UTC, and performs safe `INSERT OR IGNORE` batch updates into SQLite via a temporary `staging_ecowitt` table using an epoch timestamp.
 * **`dbt staging models (`stg_ecowitt`)**`: Cleans and types raw Ecowitt fields (temperature, humidity, pressure, wind, solar radiation, rain) with data quality checks (`--store-failures`).
 
 ### Stage 03: Matching & Bias Analysis
 
 * **`waid_03_1_match_datasets.py`**: Performs temporal/spatial matching between cleaned hourly Ecowitt records and ERA5 reanalysis data via a left join, saving outputs to `match_records` and generating CSV checkpoints.
 * **`dbt intermediate models (`stg_matches`, `int_matches_bias`)**`: Standardizes datasets, computes operational sensor-vs-ERA5 drift features, and tracks threshold boundaries dynamically via environment variables.
-* **`utils/waid_analyze_bias.py`**: Quick diagnostic sanity checker computing descriptive statistics (mean, std, min, max) for key weather variables over a specified `YYYYMM` period.
+* **`utils/waid_debug_analyze_bias.py`**: Quick diagnostic sanity checker computing descriptive statistics (mean, std, min, max) for key weather variables over a specified `YYYYMM` period.
 
 ### Stage 04: Station Specs & Setup
 
-* **`waid_04_1_setup_specs.py`**: Analyzes the last 14 days of raw Ecowitt data to estimate sensor resolution and deadband specifications, storing them as JSON configurations within the `station_metadata` table.
+* **`waid_04_2_setup_specs.py`**: Analyzes the last 14 days of raw Ecowitt data to estimate sensor resolution and deadband specifications, storing them as JSON configurations within the `station_metadata` table.
 
 ### Stage 05: Machine Learning Tensors & Training
 

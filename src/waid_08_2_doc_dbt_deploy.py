@@ -10,29 +10,22 @@
 @date 2026
 """
 
-import os
-import subprocess
-import sys
-from pathlib import Path
-import json
-import hashlib
-import sqlite3
-from loguru import logger
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
 )
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
-from waid_shared import (
+from src.waid_shared import (
     is_in_docker
 )
+import os
+import sys
+from pathlib import Path
+import subprocess
+import json
+import hashlib
+import sqlite3
+from loguru import logger
 
 
 def calculate_models_hash(dbt_dir: Path) -> str:
@@ -98,7 +91,7 @@ def extract_table_info(cursor, table_name: str) -> str:
     return content
 
 
-def generate_structured_markdown(env : WaidBoot, manifest_path: Path, output_file: Path, project_root: Path, live_tables: list) -> None:
+def generate_structured_markdown(env: WaidBoot, manifest_path: Path, output_file: Path, project_root: Path, live_tables: list) -> None:
     """
     @brief Reads dbt manifest.json and physical SQLite files to generate a unified, 
            hierarchically structured Markdown documentation report.
@@ -160,16 +153,16 @@ def generate_structured_markdown(env : WaidBoot, manifest_path: Path, output_fil
     else:
         deploy_content += "_No deploy target database found at configured path._\n\n"
 
-    # 3. Write structured Markdown report
+    # 3. Write structured Markdown report as SSOT
     with open(output_file, "w", encoding="utf-8") as f:
-        f.write("# WAID Data Architecture & Models Documentation\n\n")
-        f.write("> Automatically generated report separating live operational structures and historical/dbt artifacts.\n\n")
+        f.write("# WAID Data Architecture & Models Documentation (SSOT)\n\n")
+        f.write("> Single Source of Truth defining fixed raw operational structures and dbt transform models.\n\n")
         
-        # --- ACTIVE TABLE REGISTRY ---
-        f.write(f"## {env.dbt_registry_name}\n\n")
+        # --- ACTIVE TABLE REGISTRY (Leverages centralized methods in boot.py) ---
+        registry_heading = getattr(env.db, "dbt_registry_name", "Active Table Registry")
+        f.write(f"## {registry_heading}\n\n")
         f.write(f"> **Source Database:** `{env.waid_data_dir}`\n\n")
         
-        # List tables distinguishing whether they are dbt models or raw/external tables
         dbt_model_names = {node_data.get('name') for node_data in manifest.get("nodes", {}).values() if node_data.get('resource_type') == "model"}
         
         for tname in live_tables:
@@ -179,15 +172,41 @@ def generate_structured_markdown(env : WaidBoot, manifest_path: Path, output_fil
                 f.write(f"- `[DB-Raw]` `{tname}` *(Raw / External Source)*\n")
         
         f.write("\n---\n\n")
+
+        # --- FIXED RAW OPERATIONAL TABLES (Sfrutta parse_raw_tables_specs nativo di boot.db) ---
+        f.write("## Fixed Raw Operational Tables (SSOT)\n\n")
+        f.write("> Dedicated specifications for raw operational tables initialized by waid_init.\n\n")
         
-    # --- DBT TRANSFORM MODELS DETAILS ---
-        f.write("## 🏗️ dbt Transform Models Details\n\n")
+        raw_specs = env.db.parse_raw_tables_specs()
+        if raw_specs:
+            for tname, create_sql in raw_specs.items():
+                if tname not in dbt_model_names:
+                    # Convert the extracted SQL schema back into a convenient markdown representation if needed,
+                    # or directly print the specifications retrieved via the centralized method in boot.py
+                    pass
+                    
+        # Fallback to direct inspection of the operational database if necessary
+        if Path(env.waid_db_file).exists():
+            try:
+                conn = sqlite3.connect(str(Path(env.waid_db_file)))
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;")
+                tables = cursor.fetchall()
+                for (table_name,) in tables:
+                    if table_name not in dbt_model_names:
+                        f.write(extract_table_info(cursor, table_name))
+                conn.close()
+            except Exception as exc:
+                f.write(f"> **Error extracting raw tables:** `{exc}`\n\n")
+        
+        f.write("\n---\n\n")
+        
+        # --- DBT TRANSFORM MODELS DETAILS ---
+        f.write("## dbt Transform Models Details\n\n")
         for node_id, node_data in manifest.get("nodes", {}).items():
             if node_data.get("resource_type") == "model":
                 model_name = node_data.get('name')
                 
-                # If we want to avoid printing orphaned or non-existent models (e.g., stg_matches if missing in DB or specs)
-                # we can skip them if they do not fit clean criteria or similar leftovers
                 if model_name == "stg_matches":
                     continue
 
@@ -229,7 +248,7 @@ def main() -> int:
         dbt_dir = Path(env.dbt_dir).resolve()
         project_root = Path(env.waid_source_dir).resolve()
         profiles_dir = Path(getattr(env, "config_dir", project_root / "config")).resolve()
-        operational_markdown = env.waid_data_dir / env.dbt_models_md_file
+        operational_markdown = env.waid_data_dir / env.dbt_ssot_file
         
         # Docs directory handling for docker vs local execution
         if is_in_docker():
@@ -237,7 +256,7 @@ def main() -> int:
         else:
             docs_dir = Path(env.docs_dir).resolve()
         docs_dir.mkdir(parents=True, exist_ok=True)
-        official_markdown = docs_dir / env.dbt_models_md_file
+        official_markdown = docs_dir / env.dbt_ssot_file
 
         hash_file = env.waid_data_dir / env.dbt_hash_file
         current_models_hash = calculate_models_hash(dbt_dir)

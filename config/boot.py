@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """
 @file boot.py
 @brief Core bootstrap and configuration module for the WAID pipeline.
@@ -9,19 +11,40 @@
 
 import os
 import sys
-import shutil
 from pathlib import Path
+
+# Check current source (WAID_SOURCE should be set up)
+#ALX waid_source = os.environ.get("WAID_SOURCE")
+if not os.environ.get("WAID_SOURCE"):
+    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
+
+# Check current python environment (VIRTUAL_ENV should be set up)
+python_path = Path(sys.executable)
+is_in_venv = (
+    "VIRTUAL_ENV" in os.environ
+    and ".venv" in python_path.parts
+)
+if not is_in_venv:
+    sys.exit(
+        "[CRITICAL] Current Python environment does not match .venv. "
+        "Activate the correct virtual environment first."
+    )
+
+# Load base environment file (boot.env) to ensure all critical variables are available
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=Path(os.environ.get("WAID_SOURCE")) / "config" / "boot.env", override=os.environ.get("WAID_ALLOW_ENV_OVERRIDE"))
+
+# Pre-define environment variable for Loguru colorization
+os.environ["LOGURU_COLORIZE"] = "1"
+from loguru import logger
+
+import shutil
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 import streamlit as st
-
-# Pre-define environment variable for Loguru colorization
-os.environ["LOGURU_COLORIZE"] = "1"
-
-from dotenv import load_dotenv
-from loguru import logger
+import re
 
 class WaidExit:
     """
@@ -35,21 +58,8 @@ class WaidExit:
     VALIDATION_FAIL = 5
     DATA_NOT_FINALIZED = 6
     INTERNAL_ERROR = 7
+    DB_ALREADY_EXISTS = 8
 
-# CRITICAL CHECK: Ensure WAID_SOURCE is available in the environment
-waid_source = os.environ.get("WAID_SOURCE")
-if not waid_source or not waid_source.strip():
-    logger.error("[CRITICAL] WAID_SOURCE environment variable is not defined or empty!", file=sys.stderr)
-    logger.error(
-        "WAID_SOURCE is a critical configuration variable and must be set externally.\n",
-        file=sys.stderr
-    )
-    sys.exit(WaidExit.CONFIG_FAIL)
-
-logger.info(f"WAID_SOURCE successfully resolved from environment: {waid_source}")
-
-# Load base environment file (boot.env) to ensure all critical variables are available
-load_dotenv(dotenv_path=Path(waid_source) / "config" / "boot.env", override=os.environ.get("WAID_ALLOW_ENV_OVERRIDE"))
 
 # ==============================================================================
 # Log management section
@@ -70,7 +80,7 @@ if not getattr(logger, "_waid_initialized", False):
 
     if current_log_dir:
         current_log_dir.mkdir(parents=True, exist_ok=True)
-        log_file_path = current_log_dir / f"waid_pipeline_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file_path = current_log_dir / f"waid_{os.getenv('WAID_LOG_PREFIX', 'pipeline')}_{datetime.now().strftime('%Y%m%d')}.log"
         logger.add(
             str(log_file_path),
             level=current_log_level,
@@ -197,10 +207,10 @@ if caller_script in ENTRYPOINT_SCRIPTS:
     logger.info(f">>> NEW WAID PIPELINE CYCLE STARTED | Entrypoint: {caller_script}")
     logger.info("=" * 90)
 else:
-    logger.info(f"--- Booting module context: {caller_script} ---")
+    logger.info(f"=== 🔶 Booting module context: {caller_script} ===")
 
 # Check WAID_CONFIG_DIR dynamically based on current WAID_SOURCE
-config_dir = Path(waid_source) / "config"
+config_dir = Path(os.environ.get("WAID_SOURCE")) / "config"
 env_file = config_dir / "waid.env"
 example_file = config_dir / "waid.env.example"
 os.environ["WAID_CONFIG_DIR"] = str(config_dir)
@@ -253,28 +263,49 @@ class WaidDB:
         @return None
         """
         self.data_dir = Path(data_dir) if data_dir else Path(".")
-        self.registry_filename = registry_filename or "waid_dbt_models.md"
+        
+        # Retrieve the docs directory from the global context or set a safe fallback
+        self.docs_dir = getattr(waid_settings_instance, "docs_dir", Path("docs"))
+        self.registry_filename = registry_filename or os.getenv("WAID_DBT_SSOT_FILE")
         self.dbt_registry_name = os.getenv("WAID_DBT_REGISTRY_NAME", "Active Table Registry")
         self.loaded_tables: List[str] = []
         
         logger.debug("[DB_REGISTRY] WaidDB initialized with")
         logger.debug(f"[DB_REGISTRY] data_dir: {self.data_dir}")
         logger.debug(f"[DB_REGISTRY] registry_filename: {self.registry_filename}")
-        self._load_active_registry()
+        self.load_active_registry()
         
-    def _load_active_registry(self) -> None:
+    def resolve_registry_path(self) -> Path:
         """
-        @brief Parses the markdown registry file to dynamically expose active physical tables as attributes.
+        @brief Resolves SSOT path with automatic fallback from data dir to docs dir (cold start handling).
+        @return Path to the resolved registry file.
         """
-        registry_path = self.data_dir / self.registry_filename
+        registry_path = Path(self.data_dir) / self.registry_filename
+        
         if not registry_path.exists():
-            logger.warning(f"[DB_REGISTRY] Registry file not found at: {registry_path}")
-            return
+            docs_registry = Path(self.docs_dir) / self.registry_filename
+            if docs_registry.exists():
+                logger.info(f"[SSOT] Registry not found in data dir. Copying from docs SSOT: {docs_registry}")
+                registry_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(docs_registry, registry_path)
+            else:
+                logger.warning(f"[SSOT] Registry file not found in data or docs directories: {registry_path}")
+                
+        return registry_path
 
+    def load_active_registry(self) -> list:
+        """
+        @brief Parses the active table registry section to load tables.
+        @return List of active table names.
+        """
+        registry_path = self.resolve_registry_path()
+        if not registry_path.exists():
+            return []
+
+        loaded_tables = []
         try:
             content = registry_path.read_text(encoding="utf-8")
             in_registry = False
-            loaded_count = 0
             
             for line in content.splitlines():
                 line = line.strip()
@@ -284,23 +315,116 @@ class WaidDB:
                 elif in_registry and line.startswith("## "):
                     break
                 
-                if in_registry and line.startswith("- "):
+                # Filter registry lines containing the [DB-Model] or [DB-Raw] tags
+                if in_registry and line.startswith("- ") and "[DB-" in line:
                     parts = line.split("`")
                     if len(parts) >= 4:
                         table_name = parts[3]
                         setattr(self, table_name, table_name)
                         if table_name not in self.loaded_tables:
                             self.loaded_tables.append(table_name)
-                        loaded_count += 1
+                        if table_name not in loaded_tables:
+                            loaded_tables.append(table_name)
             
-            if loaded_count == 0:
-                logger.critical(f"[DB_REGISTRY] No table entries found in {registry_path.name}.")
-                sys.exit(WaidExit.CONFIG_FAIL)
-                
-            logger.debug(f"[DB_REGISTRY] Successfully loaded {loaded_count} active tables from {registry_path.name}")
+            logger.debug(f"[SSOT] Successfully parsed {len(loaded_tables)} active tables.")
         except Exception as exc:
-            logger.error(f"[DB_REGISTRY] Failed to parse active table registry: {exc}")
+            logger.error(f"[SSOT] Failed to parse active table registry: {exc}")
         
+        return loaded_tables
+
+    def parse_raw_tables_specs(self) -> dict:
+        """
+        @brief Parses the Fixed Raw Operational Tables section to extract SQL schemas from SSOT.
+        @return Dictionary mapping table names to their SQL create statements.
+        """
+        registry_path = self.resolve_registry_path()
+        if not registry_path.exists():
+            return {}
+
+        content = registry_path.read_text(encoding="utf-8")
+        
+        # Flexible regex to match Fixed Raw Operational Tables regardless of emojis or exact separators
+        section_match = re.search(r'##\s*(?:[^\n]*?)Fixed Raw Operational Tables[^\n]*\n(.*?)(?:\n## |\Z)', content, re.DOTALL | re.IGNORECASE)
+        if not section_match:
+            logger.warning("[SSOT] Fixed Raw Operational Tables section not found.")
+            return {}
+            
+        section_text = section_match.group(1)
+        table_blocks = re.split(r'####\s+Table:\s+`([^`]+)`', section_text)
+        
+        tables_specs = {}
+        for i in range(1, len(table_blocks), 2):
+            tname = table_blocks[i].strip()
+            block_content = table_blocks[i+1]
+            
+            rows = re.findall(r'\|\s*\*\*([^*]+)\*\*\s*\|\s*`([^`]+)`\s*\|\s*([^\|]+)\s*\|\s*([^\|]+)\s*\|\s*([^\|]+)\s*\|', block_content)
+            if rows:
+                columns_def = []
+                pk_cols = []
+                
+                for col_match in rows:
+                    col_name = col_match[0].strip()
+                    col_type = col_match[1].strip()
+                    not_null = col_match[2].strip().upper()
+                    default_val = col_match[3].strip()
+                    is_pk = col_match[4].strip().upper()
+                    
+                    col_def = f"    {col_name} {col_type}"
+                    if not_null == "YES":
+                        col_def += " NOT NULL"
+                    if default_val != "-":
+                        col_def += f" DEFAULT {default_val}"
+                        
+                    columns_def.append(col_def)
+                    if is_pk == "YES":
+                        pk_cols.append(col_name)
+                
+                if len(pk_cols) > 1:
+                    columns_def.append(f"    PRIMARY KEY ({', '.join(pk_cols)})")
+                    
+                create_sql = f"CREATE TABLE IF NOT EXISTS {tname} (\n" + ",\n".join(columns_def) + "\n);"
+                tables_specs[tname] = create_sql
+
+        return tables_specs
+
+    def init_main_database(self, db_file_path: str) -> int:
+        """
+        @brief Initializes the main SQLite database and creates raw tables from SSOT.
+        @param db_file_path Path to the SQLite database file.
+        @return Status code (SUCCESS=0 or DB_ALREADY_EXISTS=8).
+        """
+        db_path = Path(db_file_path)
+        if db_path.exists():
+            logger.warning(f"Database file {db_path} already exists. Skipping initialization.")
+            return 8  # DB_ALREADY_EXISTS
+            
+        tables_specs = self.parse_raw_tables_specs()
+        if not tables_specs:
+            logger.error("[DB_INIT] No valid DB-Raw table specifications could be extracted from SSOT.")
+            return 1
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Connecting to SQLite database at: {db_path}")
+        
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys = ON;")
+
+            for table_name, sql_query in tables_specs.items():
+                logger.info(f"Creating table: {table_name}")
+                cursor.execute(sql_query)
+
+            conn.commit()
+            conn.close()
+            logger.info("All DB-Raw tables successfully created from SSOT definitions.")
+        except Exception as exc:
+            logger.error(f"[DB_INIT] Failed to initialize database tables: {exc}")
+            return 1
+            
+        return 0
+    
     def dump(self) -> dict:
         """
         @brief Dumps the database registry status and active loaded tables.
@@ -531,7 +655,7 @@ class WaidSettings(BaseConfig):
         self.deploy_dir: Optional[Path] = self._get_path_env("WAID_DEPLOY_DIR")
         self.docs_dir: Optional[Path] = self._get_path_env("WAID_DOCS_DIR")
         self.tools_dir: Optional[Path] = self._get_path_env("WAID_TOOLS_DIR")
-        
+
         if boot_settings.waid_sim_mode:
             self.waid_data_dir: Optional[Path] = boot_settings.waid_mock_data_dir
             self.ecowitt_dir: Optional[Path] = \
@@ -586,7 +710,7 @@ class WaidSettings(BaseConfig):
 
         self.dbt_dir: Optional[Path] = self._get_path_env("WAID_DBT_DIR")
         self.dbt_profiles_dir: Optional[Path] = self._get_path_env("WAID_DBT_PROFILES_DIR")
-        self.dbt_models_md_file: Optional[str] = os.getenv("WAID_DBT_MODELS_MD_FILE")
+        self.dbt_ssot_file: Optional[str] = os.getenv("WAID_DBT_SSOT_FILE")
         self.dbt_hash_file : Optional[str] = os.getenv("WAID_DBT_HASH_FILE")
         self.dbt_registry_name: Optional[str] = os.getenv("WAID_DBT_REGISTRY_NAME", "Active Table Registry")
         self.dbt_bin_file = Path(os.getenv("WAID_SOURCE")) / ".venv-dbt" / "bin" / "dbt"
@@ -800,8 +924,8 @@ class WaidBoot:
         self.waid_exit = WaidExit()
         
         self.db = WaidDB(
-            data_dir=getattr(self._settings, "waid_data_dir", None),
-            registry_filename=getattr(self._settings, "dbt_models_md_file", None)
+            data_dir=self.waid_data_dir,
+            registry_filename=self.dbt_ssot_file
         )
         
         if execution_guard("WAID_BOOT_DUMP"):
@@ -827,7 +951,11 @@ class WaidBoot:
             
             try:
                 # Explicitly exclude WaidDB configuration and service attributes
-                excluded_attrs = {"data_dir", "registry_filename", "dbt_registry_name", "loaded_tables", "dump"}
+                excluded_attrs = {
+                    "data_dir", "docs_dir", "registry_filename", "dbt_registry_name", 
+                    "loaded_tables", "dump", "resolve_registry_path", 
+                    "load_active_registry", "parse_raw_tables_specs", "init_main_database"
+                }                
                 tables_list = [
                     attr for attr in dir(self.db) 
                     if not attr.startswith("_") and attr not in excluded_attrs and not callable(getattr(self.db, attr))

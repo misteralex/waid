@@ -8,23 +8,20 @@
 @date 2026
 """
 
-import os
-import sys
-import sqlite3
-from pathlib import Path
-from loguru import logger
-import argparse
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_mock_timestamp,
 )
+from src.waid_shared import (
+    check_db_table_exists,
+)
+import sys
+import sqlite3
+from loguru import logger
+import argparse
+
 
 def main() -> int:
     """
@@ -46,6 +43,9 @@ def main() -> int:
         conn = sqlite3.connect(env.waid_db_file)
         cursor = conn.cursor()
 
+        if not check_db_table_exists(env, env.db.inference_quality):
+            logger.warning(f"The table {env.db.inference_quality} does not exist.")
+            
         # Check quality benchmark table/view (inference quality table)
         cursor.execute("SELECT name FROM sqlite_master WHERE type in ('table', 'view') AND name='inference_quality';")
         if cursor.fetchone():

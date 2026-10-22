@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-@file download_era5.py
+@file waid_01_2_ingest_era5.py
 @brief WAID automated ERA5 atmospheric reanalysis data downloader.
 @details Connects directly to the Copernicus Climate Data Store (CDS) API.
          Extracts and merges multi-stream historical single-level NetCDF matrices
@@ -10,29 +10,23 @@
 @date 2026
 """
 
-import os
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+    validate_period,
+)
 import sys
 import shutil
 import zipfile
 import calendar
 import argparse
-from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import xarray as xr
 import cdsapi
 from loguru import logger
 
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
-    WaidBoot,
-    WError,
-    WaidExit,
-    validate_period,
-)
 
 
 def download_era5(env: WaidBoot, args: argparse.Namespace) -> bool:
@@ -72,7 +66,7 @@ def download_era5(env: WaidBoot, args: argparse.Namespace) -> bool:
         logger.warning(f"Data already available: {data_file_full}. Skipping download.")
         return True
 
-    # Clean partial file if present
+    # Remove partial file if present
     if data_file.exists():
         try:
             data_file.unlink()
@@ -134,7 +128,7 @@ def download_era5(env: WaidBoot, args: argparse.Namespace) -> bool:
 
                     merged_ds.to_netcdf(data_file)
                     merged_ds.close()
-                    logger.info("Parameter streams merged successfully into single NetCDF dataset.")
+                    logger.success("Parameter streams merged successfully into single NetCDF dataset.")
 
                     if days_in_month == last_time_dt.day:
                         shutil.move(data_file, data_file_full)
@@ -149,11 +143,11 @@ def download_era5(env: WaidBoot, args: argparse.Namespace) -> bool:
         else:
             logger.info("Standard uncompressed NetCDF payload received directly from CDS.")
 
-        logger.info(f"Success! Ready data file: {data_file}")
+        logger.success(f"Success! Ready data file: {data_file}")
 
     except Exception as e:
         error_msg = str(e)
-        # Se i dati non sono ancora disponibili sul server, avvisiamo ma non blocchiamo la pipeline
+        # If data is not yet available on the server, warn but do not block the pipeline
         if "not of the data you have requested is available yet" in error_msg.lower() or "bad request" in error_msg.lower():
             logger.warning(f"[WAID SKIPPED/WARNING] ERA5 data for {period.year}-{period.month:02d} is not yet available on CDS: {e}")
             if data_file.exists():
@@ -176,6 +170,10 @@ def download_era5(env: WaidBoot, args: argparse.Namespace) -> bool:
 
 
 def main() -> int:
+    """
+    @brief Main entry point for the ERA5 ingestion pipeline CLI utility.
+    @return Exit code integer (0 on success, error code otherwise).
+    """
     try:
         env = WaidBoot()
 

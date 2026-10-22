@@ -1,6 +1,6 @@
 """
-@file test_waid_analyze_bias.py
-@brief Unit tests for waid_analyze_bias script.
+@file test_waid_debug_analyze_bias.py
+@brief Unit tests for waid_debug_analyze_bias script.
 @author AF
 @date 2026
 """
@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
 
-from utils.waid_analyze_bias import report_bias_metrics, main
+from utils.waid_debug_analyze_bias import report_bias_metrics, main
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ def test_report_bias_metrics_empty(tmp_path, mock_env) -> None:
     assert result == mock_env.waid_exit.SUCCESS
 
 
-@patch("utils.waid_analyze_bias.WaidBoot")
+@patch("utils.waid_debug_analyze_bias.WaidBoot")
 @patch("argparse.ArgumentParser.parse_args")
 def test_main_missing_arguments(mock_parse_args, mock_waid_boot) -> None:
     """
@@ -106,6 +106,6 @@ def test_main_missing_arguments(mock_parse_args, mock_waid_boot) -> None:
     env_instance = mock_waid_boot.return_value
     env_instance.waid_exit.INPUT_FAIL = 1
 
-    with patch("sys.argv", ["waid_analyze_bias.py"]):
+    with patch("sys.argv", ["waid_debug_analyze_bias.py"]):
         exit_code = main()
         assert exit_code == env_instance.waid_exit.INPUT_FAIL

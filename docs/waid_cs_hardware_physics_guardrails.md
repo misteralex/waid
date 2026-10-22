@@ -10,7 +10,7 @@ To bridge the gap between continuous ML outputs and physical edge capabilities, 
 
 ## 1. System Architecture: Centralized & Dynamic Metadata Pipeline
 
-The metadata architecture centers around two complementary mechanisms: a single source of truth for nominal hardware capabilities (`NOMINAL_SENSOR_SPECS` in `waid_shared.py`) and a profiling script (`waid_04_1_setup_specs.py`) that analyzes operational telemetry.
+The metadata architecture centers around two complementary mechanisms: a single source of truth for nominal hardware capabilities (`NOMINAL_SENSOR_SPECS` in `waid_shared.py`) and a profiling script (`waid_04_2_setup_specs.py`) that analyzes operational telemetry.
 
 ```
        +------------------------------------+

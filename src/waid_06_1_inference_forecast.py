@@ -11,40 +11,29 @@
 @date 2026
 """
 
-import os
-import sys
-import sqlite3
-import argparse
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Tuple, List, Dict, Any
-
-import numpy as np
-import pandas as pd
-from loguru import logger
-
-# Inject configuration path safely
-logger.debug(f"Environment initialized: WAID_SOURCE={os.environ.get('WAID_SOURCE')}")
-
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
+from config.boot import (
     WaidBoot,
     WError,
     WaidExit,
     validate_mock_timestamp,
     logger_format_value,
 )
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
-from waid_shared import (
+from src.waid_shared import (
     calculate_theoretical_solar_radiation, 
     fetch_and_resample_ecowitt, 
     get_station_metadata,
     apply_physics_guardrails,
 )
+import os
+import sys
+from pathlib import Path
+import sqlite3
+import argparse
+from datetime import datetime, timedelta, timezone
+from typing import Tuple, List, Dict, Any
+import numpy as np
+import pandas as pd
+from loguru import logger
 
 
 def load_active_model_artifacts(env: WaidBoot) -> Tuple[Any, Any, Any]:

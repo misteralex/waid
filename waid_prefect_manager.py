@@ -11,24 +11,20 @@
 
 import os
 import sys
+from pathlib import Path
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
 import argparse
 import subprocess
-from pathlib import Path
 import yaml
 import time
 import httpx
 from loguru import logger
 from datetime import datetime
 
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
-    WaidBoot,
-    WError,
-    WaidExit,
-)
 
 def get_subprocess_env() -> dict:
     """

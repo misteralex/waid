@@ -1,0 +1,7 @@
+dbt-core<1.11
+dbt-sqlite
+dbt-adapters
+prefect-dbt
+prefect-shell
+sqlparse
+agate

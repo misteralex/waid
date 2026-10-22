@@ -5,7 +5,7 @@
 /**
  * @file stg_ecowitt.sql
  * @brief Staging model to clean, type-cast, and standardize raw Ecowitt weather records.
- * @details Pulls raw data from the external source, filters invalid timestamps, and casts parameters to REAL.
+ * @details Pulls raw data from the external source, filters invalid timestamps, deduplicates records, and casts parameters to REAL.
  * @author AF
  * @date 2026
  */
@@ -13,6 +13,14 @@
 WITH source_data AS (
     -- Select all records from the raw Ecowitt source table
     SELECT * FROM {{ source('external_raw', 'ecowitt_records') }}
+),
+
+deduplicated AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY timestamp ORDER BY timestamp) as rn
+    FROM source_data
+    WHERE timestamp IS NOT NULL
 )
 
 SELECT
@@ -23,5 +31,5 @@ SELECT
     CAST(wind_m_s AS REAL) AS wind_speed,
     CAST(solar_rad_w_m2 AS REAL) AS solar_radiation,
     CAST(hourly_rain_mm AS REAL) AS hourly_rain
-FROM source_data
-WHERE timestamp IS NOT NULL
+FROM deduplicated
+WHERE rn = 1

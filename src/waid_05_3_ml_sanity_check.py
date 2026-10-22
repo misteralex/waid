@@ -10,25 +10,20 @@
 @date 2026
 """
 
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
 import os
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF verbosity
-
 import sys
 from pathlib import Path
 import joblib
 import numpy as np
 from loguru import logger
 
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
-    WaidBoot,
-    WError,
-    WaidExit,
-)
 
 # Detect libraries
 HAS_KERAS = False

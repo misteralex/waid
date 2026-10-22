@@ -11,13 +11,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waid"
-version = "0.1.0"
+version = "1.0.0"
 description = "WAID draft and lab repository"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "loguru",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["config*", "src*", "mock*"]
 
 [tool.ruff]
 line-length = 150
@@ -40,6 +44,7 @@ ignore = [
 convention = "google" # O "sphinx" se preferisci mappare i tag standard
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 norecursedirs = ["src", "build", "dist", ".git", ".venv"]

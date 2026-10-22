@@ -1,10 +1,10 @@
-# WAID Data Architecture & Models Documentation
+# WAID Data Architecture & Models Documentation (SSOT)
 
-> Automatically generated report separating live operational structures and historical/dbt artifacts.
+> Single Source of Truth defining fixed raw operational structures and dbt transform models.
 
 ## Active Table Registry
 
-> **Source Database:** `/home/alex/af/github_projects/lab/waid-draft/data`
+> **Source Database:** `/home/alex/lab/waid-draft/data`
 
 - `[DB-Raw]` `ecowitt_records` *(Raw / External Source)*
 - `[DB-Raw]` `inference_forecast` *(Raw / External Source)*
@@ -18,7 +18,140 @@
 
 ---
 
+## 📌 Fixed Raw Operational Tables (SSOT)
+
+> Dedicated specifications for raw operational tables initialized by waid_init.
+
+#### Table: `ecowitt_records`
+
+| Column | Type | NotNull | Default | PK |
+| :--- | :--- | :--- | :--- | :--- |
+| **timestamp** | `TEXT` | NO | - | NO |
+| **epoch_timestamp** | `INTEGER` | NO | - | NO |
+| **indoor_temperature_c** | `REAL` | NO | - | NO |
+| **indoor_humidity** | `REAL` | NO | - | NO |
+| **outdoor_temperature_c** | `REAL` | NO | - | NO |
+| **outdoor_humidity** | `REAL` | NO | - | NO |
+| **dew_point_c** | `REAL` | NO | - | NO |
+| **feels_like_c** | `REAL` | NO | - | NO |
+| **vpd_kpa** | `REAL` | NO | - | NO |
+| **wind_m_s** | `REAL` | NO | - | NO |
+| **gust_m_s** | `REAL` | NO | - | NO |
+| **wind_direction_deg** | `REAL` | NO | - | NO |
+| **abs_pressure_hpa** | `REAL` | NO | - | NO |
+| **rel_pressure_hpa** | `REAL` | NO | - | NO |
+| **solar_rad_w_m2** | `REAL` | NO | - | NO |
+| **uv_index** | `REAL` | NO | - | NO |
+| **rain_rate_mm_hr** | `REAL` | NO | - | NO |
+| **hourly_rain_mm** | `REAL` | NO | - | NO |
+| **event_rain_mm** | `REAL` | NO | - | NO |
+| **daily_rain_mm** | `REAL` | NO | - | NO |
+| **weekly_rain_mm** | `REAL` | NO | - | NO |
+| **monthly_rain_mm** | `REAL` | NO | - | NO |
+| **yearly_rain_mm** | `REAL` | NO | - | NO |
+| **piezo_rate_mm_hr** | `REAL` | NO | - | NO |
+| **piezo_hourly_rain_mm** | `REAL` | NO | - | NO |
+| **piezo_event_rain_mm** | `REAL` | NO | - | NO |
+| **piezo_daily_rain_mm** | `REAL` | NO | - | NO |
+| **piezo_weekly_rain_mm** | `REAL` | NO | - | NO |
+| **piezo_monthly_rain_mm** | `REAL` | NO | - | NO |
+| **piezo_yearly_rain_mm** | `REAL` | NO | - | NO |
+
+#### Table: `inference_forecast`
+
+| Column | Type | NotNull | Default | PK |
+| :--- | :--- | :--- | :--- | :--- |
+| **timestamp** | `TEXT` | NO | - | YES |
+| **model_version** | `TEXT` | NO | - | YES |
+| **pred_temp** | `REAL` | NO | - | NO |
+| **pred_rh** | `REAL` | NO | - | NO |
+| **pred_pres** | `REAL` | NO | - | NO |
+| **pred_wind** | `REAL` | NO | - | NO |
+| **pred_rain** | `REAL` | NO | - | NO |
+| **pred_solar** | `REAL` | NO | - | NO |
+| **diff_temp** | `REAL` | NO | - | NO |
+| **diff_rh** | `REAL` | NO | - | NO |
+| **historical_bias_temp** | `REAL` | NO | - | NO |
+| **drift_vs_bias** | `REAL` | NO | - | NO |
+| **created_at** | `TEXT` | NO | - | NO |
+| **diff_pres** | `REAL` | NO | - | NO |
+| **diff_wind** | `REAL` | NO | - | NO |
+| **diff_solar** | `REAL` | NO | - | NO |
+| **diff_rain** | `REAL` | NO | - | NO |
+| **historical_bias_rh** | `REAL` | NO | - | NO |
+| **historical_bias_pres** | `REAL` | NO | - | NO |
+| **historical_bias_wind** | `REAL` | NO | - | NO |
+| **historical_bias_solar** | `REAL` | NO | - | NO |
+| **historical_bias_rain** | `REAL` | NO | - | NO |
+| **drift_vs_bias_temp** | `REAL` | NO | - | NO |
+| **drift_vs_bias_rh** | `REAL` | NO | - | NO |
+| **drift_vs_bias_pres** | `REAL` | NO | - | NO |
+| **drift_vs_bias_wind** | `REAL` | NO | - | NO |
+| **drift_vs_bias_solar** | `REAL` | NO | - | NO |
+| **drift_vs_bias_rain** | `REAL` | NO | - | NO |
+| **ts_window_start** | `TEXT` | NO | - | NO |
+| **ts_window_stop** | `TEXT` | NO | - | NO |
+| **actual_temp** | `REAL` | NO | - | NO |
+| **actual_rh** | `REAL` | NO | - | NO |
+| **actual_pres** | `REAL` | NO | - | NO |
+| **actual_wind** | `REAL` | NO | - | NO |
+| **actual_solar** | `REAL` | NO | - | NO |
+| **actual_rain** | `REAL` | NO | - | NO |
+
+#### Table: `match_records`
+
+| Column | Type | NotNull | Default | PK |
+| :--- | :--- | :--- | :--- | :--- |
+| **timestamp** | `TEXT` | NO | - | NO |
+| **temp_era5** | `REAL` | NO | - | NO |
+| **pres_era5** | `REAL` | NO | - | NO |
+| **rh_era5** | `REAL` | NO | - | NO |
+| **wind_era5** | `REAL` | NO | - | NO |
+| **solar_era5** | `REAL` | NO | - | NO |
+| **rain_era5** | `REAL` | NO | - | NO |
+| **temp_eco** | `REAL` | NO | - | NO |
+| **pres_eco** | `REAL` | NO | - | NO |
+| **rh_eco** | `REAL` | NO | - | NO |
+| **wind_eco** | `REAL` | NO | - | NO |
+| **solar_eco** | `REAL` | NO | - | NO |
+| **rain_eco** | `REAL` | NO | - | NO |
+
+#### Table: `ml_model_registry`
+
+| Column | Type | NotNull | Default | PK |
+| :--- | :--- | :--- | :--- | :--- |
+| **model_version** | `TEXT` | NO | - | YES |
+| **station_id** | `TEXT` | YES | - | NO |
+| **trained_at** | `TEXT` | YES | - | NO |
+| **last_ecowitt_timestamp** | `TEXT` | YES | - | NO |
+| **train_samples_count** | `INTEGER` | YES | - | NO |
+| **x_scaler_path** | `TEXT` | YES | - | NO |
+| **y_scaler_path** | `TEXT` | YES | - | NO |
+| **model_path** | `TEXT` | YES | - | NO |
+| **metrics_mse** | `REAL` | NO | - | NO |
+| **is_active** | `INTEGER` | NO | 1 | NO |
+
+
+---
+
 ## 🏗️ dbt Transform Models Details
+
+### Model: `stg_ecowitt`
+
+**Schema:** `main`  
+**Description:** 
+
+| Column | Data Type | Description |
+| :--- | :--- | :--- |
+| **timestamp** | `None` |  |
+| **temperature** | `None` |  |
+| **pressure_hpa** | `None` |  |
+| **humidity** | `None` |  |
+| **wind_speed** | `None` |  |
+| **solar_radiation** | `None` |  |
+| **hourly_rain** | `None` |  |
+
+---
 
 ### Model: `int_matches_bias`
 
@@ -142,36 +275,19 @@
 
 ---
 
-### Model: `stg_ecowitt`
-
-**Schema:** `main`  
-**Description:** 
-
-| Column | Data Type | Description |
-| :--- | :--- | :--- |
-| **timestamp** | `None` |  |
-| **temperature** | `None` |  |
-| **pressure_hpa** | `None` |  |
-| **humidity** | `None` |  |
-| **wind_speed** | `None` |  |
-| **solar_radiation** | `None` |  |
-| **hourly_rain** | `None` |  |
-
----
-
 ## Physical SQLite Databases & Tables
 
 > Inspected directly from local operational SQLite database files.
 
 ---
 
-### Database File: `/home/alex/af/github_projects/lab/waid-draft/data`
+### Database File: `/home/alex/lab/waid-draft/data`
 
 #### Table: `ecowitt_records`
 
 | Column | Type | NotNull | Default | PK |
 | :--- | :--- | :--- | :--- | :--- |
-| **timestamp** | `TEXT` | NO | - | YES |
+| **timestamp** | `TEXT` | NO | - | NO |
 | **epoch_timestamp** | `INTEGER` | NO | - | NO |
 | **indoor_temperature_c** | `REAL` | NO | - | NO |
 | **indoor_humidity** | `REAL` | NO | - | NO |
@@ -335,7 +451,7 @@
 
 | Column | Type | NotNull | Default | PK |
 | :--- | :--- | :--- | :--- | :--- |
-| **timestamp** | `TEXT` | NO | - | YES |
+| **timestamp** | `TEXT` | NO | - | NO |
 | **temp_era5** | `REAL` | NO | - | NO |
 | **pres_era5** | `REAL` | NO | - | NO |
 | **rh_era5** | `REAL` | NO | - | NO |
@@ -405,9 +521,9 @@
 
 | Column | Type | NotNull | Default | PK |
 | :--- | :--- | :--- | :--- | :--- |
-| **timestamp** | `TEXT` | NO | - | NO |
+| **timestamp** | `TEXT` | NO | - | YES |
 | **created_at** | `TEXT` | NO | - | NO |
-| **model_version** | `TEXT` | NO | - | NO |
+| **model_version** | `TEXT` | NO | - | YES |
 | **pred_temp** | `REAL` | NO | - | NO |
 | **pred_rh** | `REAL` | NO | - | NO |
 | **pred_pres** | `REAL` | NO | - | NO |

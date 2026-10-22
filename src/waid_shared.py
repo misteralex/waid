@@ -7,15 +7,20 @@
 @date 2026
 """
 
+from config.boot import (
+    WError, 
+    WaidBoot, 
+    WaidExit,
+)
+
 from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
-
-from boot import WError, WaidBoot, WaidExit
 from loguru import logger
 import numpy as np
 import pandas as pd
+import subprocess
 
 
 def calculate_theoretical_solar_radiation(
@@ -477,4 +482,79 @@ def is_in_docker() -> bool:
             content = f.read()
             return "docker" in content or "containerd" in content
     except Exception:
+        return False
+    
+    
+def run_dbt_command(cmd_list: list, env, period: str = None) -> int:
+    """
+    Helper function to execute a dbt command with standard project arguments.
+    
+    @param cmd_list: List representing the base dbt command (e.g., ["dbt", "run", ...]).
+    @param env: Configuration object containing paths and variables.
+    @param period: Optional period string in YYYY-MM format.
+    @return: Process return code integer.
+    """
+    profiles_dir = str(Path(env.waid_source_dir) / "config")
+    project_dir = str(env.dbt_dir)
+    target = "dev"
+    
+    # Use dbt binary path from env configuration, falling back to string "dbt" if not set
+    dbt_executable = str(env.dbt_bin_file) if env.dbt_bin_file else "dbt"
+    
+    # Configuration variables dictionary formatted as a JSON string
+    dbt_vars = {
+        "max_bias_temp": float(env.max_bias_temp),
+        "max_bias_pres": float(env.max_bias_pres),
+        "max_bias_rh": float(env.max_bias_rh),
+        "max_bias_wind": float(env.max_bias_wind),
+        "max_bias_solar": float(env.max_bias_solar),
+        "max_bias_rain": float(env.max_bias_rain),
+    }
+    
+    if period:
+        dbt_vars["period"] = period
+    
+    full_cmd = [dbt_executable] + cmd_list[1:] + [
+        "--profiles-dir", profiles_dir,
+        "--project-dir", project_dir,
+        "--target", target,
+        "--vars", json.dumps(dbt_vars, default=str)
+    ]
+    
+    logger.debug(f"Running dbt command -> {' '.join(full_cmd)}")
+    
+    try:
+        result = subprocess.run(
+            full_cmd,
+            check=True,
+            text=True,
+            capture_output=True
+        )
+        logger.debug(result.stdout)
+        return 0
+    except subprocess.CalledProcessError as e:
+        logger.error(f"dbt command failed with exit code {e.returncode}")
+        logger.error(f"STDERR:\n{e.stderr}")
+        return e.returncode
+    
+    
+def check_db_table_exists(env, table_name: str) -> bool:
+    """
+    @brief Checks whether a specific table or view exists in the WAID SQLite database.
+    @param env WaidBoot configuration instance.
+    @param table_name Name of the target table or view to check.
+    @return True if the table/view exists, False otherwise.
+    """
+    try:
+        if not env.waid_db_file:
+            return False
+        conn = sqlite3.connect(env.waid_db_file)
+        try:
+            return conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?",
+                (table_name,),
+            ).fetchone() is not None
+        finally:
+            conn.close()
+    except (sqlite3.Error, AttributeError):
         return False

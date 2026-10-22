@@ -9,8 +9,19 @@
 @date 2026
 """
 
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+    validate_mock_timestamp,
+)
+from src.waid_shared import (
+    get_last_inference_datetime,
+    check_db_table_exists,
+)
 import os
 import sys
+from pathlib import Path
 import sqlite3
 import shutil
 import argparse
@@ -19,45 +30,9 @@ import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 import plotly.graph_objects as go
 import numpy as np
-from pathlib import Path
 from loguru import logger
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
-
-from dotenv import load_dotenv
-
-# Calculate absolute project root path and load configuration env file
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-dotenv_path = PROJECT_ROOT / "config" / "waid.env"
-
-if dotenv_path.exists():
-    load_dotenv(dotenv_path=dotenv_path)
-else:
-    load_dotenv()  # Fallback to default .env file in project root
-
-# Resolve WAID root path via WAID_SOURCE environment variable
-waid_root = Path(
-    os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])
-).resolve()
-
-# Append src directory to sys.path (enables imports like: from waid_shared import ...)
-src_dir = waid_root / "src"
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
-
-# Append root directory to sys.path as fallback
-if str(waid_root) not in sys.path:
-    sys.path.insert(0, str(waid_root))
-
-# Append config directory to sys.path (enables imports like: from boot import ...)
-config_dir = waid_root / "config"
-if str(config_dir) not in sys.path:
-    sys.path.insert(0, str(config_dir))
-
-from boot import WaidBoot, WError, WaidExit
-
-# Import shared utilities from Single Source of Truth inside src/
-from waid_shared import get_last_inference_datetime
 
 
 def get_deployment_status() -> str:
@@ -163,6 +138,11 @@ def get_available_dates() -> list:
             engine = create_engine(supabase_url, poolclass=NullPool)
 
             schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
+            
+            if not check_db_table_exists(env, "public_forecasts"):
+                logger.warning(f"The table public_forecasts does not exist.")
+                return []
+            
             query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {schema_prefix}public_forecasts ORDER BY target_date DESC;")
             with engine.connect() as conn:
                 df_dates = pd.read_sql_query(query, conn)

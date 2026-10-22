@@ -9,16 +9,24 @@
 @date 2026
 """
 
+import sys
+import os
+from pathlib import Path
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
+from src.waid_shared import (
+    generate_period_range,
+    get_last_inference_datetime,
+)
 import argparse
 from datetime import datetime, timezone
 import httpcore
 import httpx
-import os
-from pathlib import Path
 import subprocess
-import sys
 from typing import List, Optional, Union
-
 from loguru import logger
 from prefect import flow, get_run_logger, task
 from prefect.client.orchestration import get_client
@@ -26,26 +34,10 @@ from prefect.context import TaskRunContext
 from prefect.exceptions import PrefectHTTPStatusError
 from prefect.settings import PREFECT_API_URL, temporary_settings
 
-if not os.environ.get("WAID_SOURCE"):
-    sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "config"))
-from boot import (
-    WaidBoot,
-    WError,
-    WaidExit,
-)
-
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE")) / "src"))
-from waid_shared import (
-    generate_period_range,
-    get_last_inference_datetime,
-)
 
 # ==============================================================================
 # PREFECT TASKS (PYTHON & DBT EXECUTORS)
 # ==============================================================================
-
 
 @task(name="Python Step Task")
 def run_python_step(
@@ -215,7 +207,7 @@ def data_ingestion_flow(
 
     if exit_code == 0:
         exit_code = run_python_step(
-            env, "waid_02_1_sync_ecowitt.py", extra_args=period_args
+            env, "waid_02_2_sync_ecowitt.py", extra_args=period_args
         )
 
     return exit_code
@@ -273,7 +265,7 @@ def data_preparation_flow(
 
     if exit_code == 0:
         exit_code = run_python_step(
-            env, "waid_04_1_setup_specs.py", extra_args=period_args
+            env, "waid_04_2_setup_specs.py", extra_args=period_args
         )
 
     return exit_code
