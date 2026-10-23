@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
+"""
+@file waid_debug_analyze_bias.py
+@brief Bias Analysis: sanity check to validate data ready for ML training.
+@details Performs Phase 3 (Transform/Alignment) of the data pipeline.
+@author AF
+@date 2026
+"""
 
-import pandas as pd
-import sqlite3
-import argparse
 import os
 import sys
 from pathlib import Path
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+    validate_period,
+)
+import pandas as pd
+import sqlite3
+import argparse
 from loguru import logger
 
-##
-# @file waid_analyze_bias.py
-# @brief Bias Analysis: sanity check to validate data ready for ML training
-# @details Performs Phase 3 (Transform/Alignment) of the data pipeline
-# @author AF
-# @date 2026
-
-# Import WaidBoot configuration and utility classess
-sys.path.append(str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config"))
-from boot import (
-    WaidBoot,
-    validate_period,
-    WError,
-)
 
 def report_bias_metrics(
     env : WaidBoot,
@@ -36,7 +35,7 @@ def report_bias_metrics(
 
     requested_period = period.strftime("%Y-%m")
    
-    conn = sqlite3.connect(env.waid_db)
+    conn = sqlite3.connect(env.waid_db_file)
     df = pd.read_sql_query(
         """
         SELECT *

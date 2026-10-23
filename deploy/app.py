@@ -75,19 +75,14 @@ def run_deployment_setup(env: WaidBoot) -> None:
     
     deploy_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Write requirements.txt
-    req_content = (
-        "streamlit>=1.30.0\n"
-        "plotly>=5.0.0\n"
-        "python-dotenv>=1.0.0\n"
-        "loguru>=0.7.0\n"
-        "pandas>=2.0.0\n"
-        "numpy>=1.24.0\n"
-        "sqlalchemy>=2.0.0\n"
-        "psycopg2-binary>=2.9.0\n"
-    )
-    with open(deploy_dir / "requirements.txt", "w", encoding="utf-8") as f:
-        f.write(req_content)
+    # 1. Copy requirements.txt
+    source_req = env.waid_source_dir / "requirements.txt"
+    target_req = env.deploy_dir / "requirements.txt"
+    if source_req.exists():
+        shutil.copy(source_req, target_req)
+        logger.success(f"Requirements successfully updated from {source_req} to {target_req}")
+    else:
+        logger.warning(f"Mising main requirements.txt in {source_req}")
 
     # 2. Generate app.py by updating the @file header
     content = src_script.read_text(encoding="utf-8")

@@ -11,17 +11,16 @@
 
 import os
 import sys
+from pathlib import Path
+from config.boot import (
+    WaidBoot,
+    WError,
+    WaidExit,
+)
 import sqlite3
 import pandas as pd
-from pathlib import Path
 from datetime import datetime, timezone
 from loguru import logger
-
-# Safely append configuration path
-sys.path.append(
-    str(Path(os.environ.get("WAID_SOURCE", Path(__file__).resolve().parents[1])).resolve() / "config")
-)
-from boot import WaidBoot, WError, WaidExit
 
 
 def inspect_table_timestamps(conn: sqlite3.Connection, table_name: str, ts_column: str = "timestamp") -> None:
@@ -112,13 +111,13 @@ def main() -> int:
     """
     try:
         env = WaidBoot()
-        logger.info(f"Connecting to WAID database at: {env.waid_db}")
+        logger.info(f"Connecting to WAID database at: {env.waid_db_file}")
 
-        if not os.path.exists(env.waid_db):
-            logger.error(f"Database file not found: {env.waid_db}")
+        if not os.path.exists(env.waid_db_file):
+            logger.error(f"Database file not found: {env.waid_db_file}")
             return WaidExit.DATA_FAIL
 
-        with sqlite3.connect(env.waid_db) as conn:
+        with sqlite3.connect(env.waid_db_file) as conn:
             tables = [
                 ("ecowitt_records", "timestamp"),
                 ("stg_ecowitt", "timestamp"),
