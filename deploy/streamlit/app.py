@@ -9,6 +9,11 @@
 @date 2026
 """
 
+import os
+import sys
+waid_source = os.getenv("WAID_SOURCE")
+if waid_source and waid_source not in sys.path:
+    sys.path.insert(0, waid_source)
 from config.boot import (
     WaidBoot,
     WError,
@@ -19,8 +24,6 @@ from src.waid_shared import (
     get_last_inference_datetime,
     check_db_table_exists,
 )
-import os
-import sys
 from pathlib import Path
 import sqlite3
 import shutil
@@ -34,7 +37,6 @@ from loguru import logger
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
-
 def get_deployment_status() -> str:
     """Evaluates the deployment package sync status relative to the source script.
 
@@ -43,7 +45,7 @@ def get_deployment_status() -> str:
     """
     try:
         env = WaidBoot()
-        deploy_app = Path(env.deploy_dir) / "app.py"
+        deploy_app = Path(env.streamlit_dir) / "app.py"
         src_script = Path(__file__).resolve()
         
         if not deploy_app.exists():
@@ -64,20 +66,20 @@ def run_deployment_setup(env: WaidBoot) -> None:
     @param env WaidBoot configuration instance containing system environment settings.
     @return None
     """
-    deploy_dir = Path(env.deploy_dir)
+    deploy_streamlit_dir = Path(env.streamlit_dir)
     src_script = Path(__file__).resolve()
     db_source = Path(env.deploy_db_file)
-    db_dest = Path(deploy_dir / "data" / os.path.basename(env.deploy_db_file))
+    db_dest = Path(env.streamlit_dir / "data" / os.path.basename(env.deploy_db_file))
 
     logger.info(f"🔶 Deploy Mode : {env.deploy_mode}")
     logger.info(f"🔶 DB Target   : {getattr(env, 'target_env', os.getenv('WAID_TARGET_ENV', 'draft'))}")    
-    logger.info(f"Initializing deployment package at: {deploy_dir}")
+    logger.info(f"Initializing deployment package at: {env.streamlit_dir}")
     
-    deploy_dir.mkdir(parents=True, exist_ok=True)
+    env.streamlit_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Copy requirements.txt
     source_req = env.waid_source_dir / "requirements.txt"
-    target_req = env.deploy_dir / "requirements.txt"
+    target_req = env.streamlit_dir / "requirements.txt"
     if source_req.exists():
         shutil.copy(source_req, target_req)
         logger.success(f"Requirements successfully updated from {source_req} to {target_req}")
@@ -90,11 +92,11 @@ def run_deployment_setup(env: WaidBoot) -> None:
         "@file app.py", 
         "@file app.py"
     )
-    (deploy_dir / "app.py").write_text(updated_content, encoding="utf-8")
+    (env.streamlit_dir / "app.py").write_text(updated_content, encoding="utf-8")
 
     # 3. Copy database file to deployment root directory
     if db_source.exists():
-        (deploy_dir / "data").mkdir(parents=True, exist_ok=True)
+        (env.streamlit_dir / "data").mkdir(parents=True, exist_ok=True)
         logger.info(f"Data deployment from {db_source} to {db_dest}")
         shutil.copy(db_source, db_dest)
         logger.success(f"Database successfully copied to: {db_dest}")
@@ -133,9 +135,17 @@ def get_available_dates() -> list:
             engine = create_engine(supabase_url, poolclass=NullPool)
 
             schema_prefix = f"{env.db_schema_target}." if hasattr(env, "db_schema_target") and env.db_schema_target else ""
+            schema_name = getattr(env, "db_schema_target", "public")
             
-            if not check_db_table_exists(env, "public_forecasts"):
-                logger.warning(f"The table public_forecasts does not exist.")
+            check_query = text("""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_schema = :schema AND table_name = :table
+            """)
+            with engine.connect() as conn:
+                table_count = conn.execute(check_query, {"schema": schema_name, "table": "public_forecasts"}).scalar()
+
+            if not table_count or table_count == 0:
+                logger.warning(f"The table {schema_name}.public_forecasts does not exist.")
                 return []
             
             query = text(f"SELECT DISTINCT DATE(timestamp) AS target_date FROM {schema_prefix}public_forecasts ORDER BY target_date DESC;")
@@ -144,20 +154,20 @@ def get_available_dates() -> list:
 
             if not df_dates.empty:
                 return df_dates['target_date'].astype(str).tolist()
+                
         except Exception as e:
             st.error(f"Error fetching dates from Supabase: {e}")
             return []
     else:
         base_dir = Path(__file__).resolve().parent
-        current_deploy_db = os.path.basename(env.deploy_db_file)
-        deploy_dir = base_dir if base_dir.name == "deploy" else base_dir / "deploy"
-        cloud_deploy_db = deploy_dir / "data" / current_deploy_db
-        local_deploy_db = Path(env.deploy_dir) / "data" / current_deploy_db
+        streamlit_db_file = os.path.basename(env.deploy_db_file)
+        deploy_streamlit_dir = base_dir if base_dir.name == env.streamlit_dir.name else base_dir / env.streamlit_dir.name
+        cloud_deploy_db = deploy_streamlit_dir / "data" / streamlit_db_file
+        local_deploy_db = env.streamlit_dir / "data" / streamlit_db_file
         db_path = cloud_deploy_db if cloud_deploy_db.exists() else (local_deploy_db if local_deploy_db.exists() else None)
-
         if not db_path or not db_path.exists():
             return []
-
+        
         try:
             with sqlite3.connect(db_path) as conn:
                 query = "SELECT DISTINCT DATE(timestamp) AS target_date FROM public_forecasts ORDER BY target_date DESC"
@@ -251,13 +261,13 @@ def load_public_data_for_feature(target_date: str, feature: str = None) -> pd.Da
                 return pd.DataFrame()
     else:
         base_dir = Path(__file__).resolve().parent
-        current_deploy_db = os.path.basename(env.deploy_db_file)
+        streamlit_db_file = os.path.basename(env.deploy_db_file)
         cloud_deploy_db = (
-            base_dir / "data" / current_deploy_db
+            base_dir / "data" / streamlit_db_file
             if base_dir.name == "deploy"
-            else base_dir / "deploy" / "data" / current_deploy_db
+            else base_dir / env.streamlit_dir.name / "data" / streamlit_db_file
         )
-        local_deploy_db = Path(env.deploy_dir) / "data" / current_deploy_db
+        local_deploy_db = Path(env.streamlit_dir) / "data" / streamlit_db_file
         db_path = cloud_deploy_db if cloud_deploy_db.exists() else (local_deploy_db if local_deploy_db.exists() else None)
         
         if not db_path or not db_path.exists():
@@ -349,14 +359,14 @@ def fetch_last_inference_timestamp() -> str:
             return "N/A"
     else:
         base_dir = Path(__file__).resolve().parent
-        current_deploy_db = os.path.basename(env.deploy_db_file)
+        streamlit_db_file = os.path.basename(env.deploy_db_file)
         cloud_deploy_db = (
-            base_dir / "data" / current_deploy_db
+            base_dir / "data" / streamlit_db_file
             if base_dir.name == "deploy"
-            else base_dir / "deploy" / "data" / current_deploy_db
+            else base_dir / "deploy" / "data" / streamlit_db_file
         )
-        local_deploy_db = Path(env.deploy_dir) / "data" / current_deploy_db
-        data_dir_db = Path(env.waid_data_dir) / current_deploy_db
+        local_deploy_db = Path(env.deploy_dir) / "data" / streamlit_db_file
+        data_dir_db = Path(env.waid_data_dir) / streamlit_db_file
 
         db_path = None
         for candidate in [cloud_deploy_db, local_deploy_db, data_dir_db]:

@@ -8,25 +8,46 @@
 @author AF
 @date 2026
 """
-
 import os
 import sys
 from pathlib import Path
 
+# Detect if running on Streamlit Cloud environment
+is_streamlit_cloud = "STREAMLIT_SHARING_MODE" in os.environ or Path("/mount/src").exists()
+
+# If on Streamlit Cloud, inject st.secrets into os.environ automatically
+if is_streamlit_cloud:
+    try:
+        import streamlit as st
+        for key, value in st.secrets.items():
+            if isinstance(value, str):
+                os.environ[key] = value
+            elif isinstance(value, dict):
+                for sub_key, sub_val in value.items():
+                    os.environ[f"{key}_{sub_key}"] = str(sub_val)
+    except Exception:
+        pass
+
+    # Set default WAID_SOURCE for Streamlit Cloud if missing
+    if not os.environ.get("WAID_SOURCE"):
+        os.environ["WAID_SOURCE"] = "/mount/src/waid-draft"
+
 # Check current source (WAID_SOURCE should be set up)
-#ALX waid_source = os.environ.get("WAID_SOURCE")
 if not os.environ.get("WAID_SOURCE"):
     sys.exit("[CRITICAL] WAID_SOURCE environment variable is missing. Export it first.")
 
-# Check current python environment (VIRTUAL_ENV should be set up)
+# Check current python environment (VIRTUAL_ENV or standard venv paths)
 python_path = Path(sys.executable)
 is_in_venv = (
     "VIRTUAL_ENV" in os.environ
-    and ".venv" in python_path.parts
+    or ".venv" in python_path.parts
+    or "venv" in python_path.parts
+    or is_streamlit_cloud
 )
+
 if not is_in_venv:
     sys.exit(
-        "[CRITICAL] Current Python environment does not match .venv. "
+        "[CRITICAL] Current Python environment does not match venv. "
         "Activate the correct virtual environment first."
     )
 
@@ -736,11 +757,13 @@ class WaidSettings(BaseConfig):
         self.era5_api_key: str = get_env_with_fallback("WAID_ERA5_API_KEY", "placeholder_era5_key", var_type=str)
 
         self.forecast_horizon_hours: Optional[int] = self._get_int_env("WAID_FORECAST_HORIZON_HOURS")
-        self.lookback_hours: Optional[int] = self._get_int_env("WAID_LOOKBACK_HOURS", 24)
-        self.fastapi_port: Optional[int] = self._get_int_env("WAID_FASTAPI_PORT", 8000)
+        self.lookback_hours: Optional[int] = self._get_int_env("WAID_LOOKBACK_HOURS", 24)        
+        
         self.streamlit_port: Optional[int] = self._get_int_env("WAID_STREAMLIT_PORT", 8501)
         self.streamlit_url: Optional[str] = os.getenv("WAID_STREAMLIT_URL", "https://waid-analytics.streamlit.app/")
-
+        self.streamlit_dir: Optional[str] = os.getenv("WAID_STREAMLIT_APP_DIR")
+        self.streamlit_dir: Optional[Path] = self._get_path_env("WAID_STREAMLIT_APP_DIR")
+        
         self.ml_threshold_min: Optional[int] = self._get_int_env("WAID_ML_THRESHOLD_MIN")
 
         self.max_bias_temp: Optional[float] = self._get_float_env("WAID_ML_BIAS_TEMP")
