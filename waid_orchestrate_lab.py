@@ -842,12 +842,7 @@ def main() -> int:
     
     # Temporary list of steps to ignore in the master sequence (e.g., for testing or debugging)
     master_ignores = [    
-        #"waid_01",                      # Ignore Ecowitt and ERA5 ingestion 
-        #"waid_mock_update_ecowitt",     # Ignore mock data generation in simulation mode
-        "waid_01_2_ingest_era5",        # ignore ERA5
-        #"waid_02_2_sync_ecowitt",       # Ignore Ecowitt sync 
-        #"waid_05",
-        #"waid_06_1",                      # Ignore dbt steps 
+        #i.e "waid_01",                     # Ignore Ecowitt and ERA5 ingestion 
     ]
     
     master_steps = []

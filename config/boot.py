@@ -228,7 +228,7 @@ if caller_script in ENTRYPOINT_SCRIPTS:
     logger.info(f">>> NEW WAID PIPELINE CYCLE STARTED | Entrypoint: {caller_script}")
     logger.info("=" * 90)
 else:
-    logger.info(f"=== 🔶 Booting module context: {caller_script} ===")
+    logger.info(f"=== 🔶 Booting module: {caller_script} ===")
 
 # Check WAID_CONFIG_DIR dynamically based on current WAID_SOURCE
 config_dir = Path(os.environ.get("WAID_SOURCE")) / "config"
@@ -319,13 +319,13 @@ class WaidDB:
         @brief Parses the active table registry section to load tables.
         @return List of active table names.
         """
-        registry_path = self.resolve_registry_path()
-        if not registry_path.exists():
+        ssot_path = self.resolve_registry_path()
+        if not ssot_path.exists():
             return []
 
         loaded_tables = []
         try:
-            content = registry_path.read_text(encoding="utf-8")
+            content = ssot_path.read_text(encoding="utf-8")
             in_registry = False
             
             for line in content.splitlines():
@@ -361,16 +361,30 @@ class WaidDB:
         registry_path = self.resolve_registry_path()
         if not registry_path.exists():
             return {}
-
+        logger.info(f"Parsing raw tables specifications (SSOT): {registry_path}")       
         content = registry_path.read_text(encoding="utf-8")
+        logger.debug(f"content length: {len(content)}")
         
-        # Flexible regex to match Fixed Raw Operational Tables regardless of emojis or exact separators
-        section_match = re.search(r'##\s*(?:[^\n]*?)Fixed Raw Operational Tables[^\n]*\n(.*?)(?:\n## |\Z)', content, re.DOTALL | re.IGNORECASE)
-        if not section_match:
-            logger.warning("[SSOT] Fixed Raw Operational Tables section not found.")
+        # Extraction based on rows splits
+        lines = content.splitlines()
+        section_lines = []
+        capturing = False
+        
+        for line in lines:
+            if "Fixed Raw Operational Tables (SSOT)" in line:
+                capturing = True
+                continue
+            if capturing and line.startswith("## ") and "Fixed Raw Operational Tables" not in line:
+                break
+            if capturing:
+                section_lines.append(line)
+                
+        section_text = "\n".join(section_lines)
+        
+        if not section_text.strip():
+            logger.warning("Fixed Raw Operational Tables section not found in SSOT.")
             return {}
             
-        section_text = section_match.group(1)
         table_blocks = re.split(r'####\s+Table:\s+`([^`]+)`', section_text)
         
         tables_specs = {}

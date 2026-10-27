@@ -59,8 +59,6 @@ def main() -> int:
         if code != env.waid_exit.SUCCESS:
             return code
 
-        """
-        #ALX TODO check test case
         code = run_dbt_command(
             [
                 "dbt", "test", "--select", 
@@ -71,7 +69,6 @@ def main() -> int:
         )
         if code != env.waid_exit.SUCCESS:
             return code
-        """
         
         logger.success("=== dbt Environment Synchronization Completed Successfully ===")
 

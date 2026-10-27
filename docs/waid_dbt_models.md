@@ -18,7 +18,7 @@
 
 ---
 
-## 📌 Fixed Raw Operational Tables (SSOT)
+## Fixed Raw Operational Tables (SSOT)
 
 > Dedicated specifications for raw operational tables initialized by waid_init.
 
@@ -134,7 +134,7 @@
 
 ---
 
-## 🏗️ dbt Transform Models Details
+## dbt Transform Models Details
 
 ### Model: `stg_ecowitt`
 
@@ -509,7 +509,7 @@
 
 ---
 
-## 🚀 Deploy Target Database (Isolated - Non-Versioned)
+## Deploy Target Database (Isolated - Non-Versioned)
 
 > Inspected from isolated deploy target database (`env.deploy_db_file`). Not part of core versioning.
 

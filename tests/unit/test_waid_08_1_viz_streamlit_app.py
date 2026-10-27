@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """
 @file test_waid_08_1_viz_streamlit_app.py
 @brief Unit tests for the WAID Streamlit analytics dashboard and deployment script.
@@ -31,7 +29,7 @@ def test_get_deployment_status_missing(tmp_path: Path) -> None:
     @param tmp_path Pytest fixture providing a temporary directory.
     """
     mock_env = MagicMock()
-    mock_env.deploy_dir = str(tmp_path / "deploy")
+    mock_env.streamlit_dir = tmp_path / "deploy"
 
     with patch("waid_08_1_viz_streamlit_app.WaidBoot", return_value=mock_env):
         status = get_deployment_status()
@@ -44,11 +42,16 @@ def test_run_deployment_setup(tmp_path: Path) -> None:
     @param tmp_path Pytest fixture providing a temporary directory.
     """
     deploy_dir = tmp_path / "deploy"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "requirements.txt").touch()
+
     db_file = tmp_path / "deploy_waid.db"
     db_file.touch()
 
     mock_env = MagicMock()
-    mock_env.deploy_dir = str(deploy_dir)
+    mock_env.streamlit_dir = deploy_dir
+    mock_env.waid_source_dir = source_dir
     mock_env.deploy_db_file = str(db_file)
     mock_env.deploy_mode = "local"
     mock_env.target_env = "draft"
@@ -84,7 +87,7 @@ def test_get_available_dates_sqlite(tmp_path: Path) -> None:
 
     mock_env = MagicMock()
     mock_env.deploy_mode = "local"
-    mock_env.deploy_dir = str(deploy_dir)
+    mock_env.streamlit_dir = deploy_dir
     mock_env.deploy_db_file = str(db_path)
 
     with patch("waid_08_1_viz_streamlit_app.WaidBoot", return_value=mock_env):
@@ -126,7 +129,7 @@ def test_load_public_data_for_feature_sqlite(tmp_path: Path) -> None:
 
     mock_env = MagicMock()
     mock_env.deploy_mode = "local"
-    mock_env.deploy_dir = str(deploy_dir)
+    mock_env.streamlit_dir = deploy_dir
     mock_env.deploy_db_file = str(db_path)
     mock_env.tz_timezone = "UTC"
 
@@ -143,11 +146,16 @@ def test_main_cli_deploy_flag(tmp_path: Path) -> None:
     @param tmp_path Pytest fixture providing a temporary directory.
     """
     deploy_dir = tmp_path / "deploy"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "requirements.txt").touch()
+
     db_file = tmp_path / "deploy_waid.db"
     db_file.touch()
 
     mock_env = MagicMock()
-    mock_env.deploy_dir = str(deploy_dir)
+    mock_env.streamlit_dir = deploy_dir
+    mock_env.waid_source_dir = source_dir
     mock_env.deploy_db_file = str(db_file)
     mock_env.deploy_mode = "local"
     mock_env.target_env = "draft"

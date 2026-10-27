@@ -126,7 +126,7 @@ def generate_structured_markdown(env: WaidBoot, manifest_path: Path, output_file
     sqlite_details_content += "---\n\n"
 
     # 2. Deploy Target Database Inspection (using env.deploy_db_file)
-    deploy_content = "## 🚀 Deploy Target Database (Isolated - Non-Versioned)\n\n"
+    deploy_content = "## Deploy Target Database (Isolated - Non-Versioned)\n\n"
     deploy_content += "> Inspected from isolated deploy target database (`env.deploy_db_file`). Not part of core versioning.\n\n---\n\n"
     
     if env.deploy_db_file and Path(env.deploy_db_file).exists():
@@ -158,7 +158,7 @@ def generate_structured_markdown(env: WaidBoot, manifest_path: Path, output_file
         f.write("# WAID Data Architecture & Models Documentation (SSOT)\n\n")
         f.write("> Single Source of Truth defining fixed raw operational structures and dbt transform models.\n\n")
         
-        # --- ACTIVE TABLE REGISTRY (Leverages centralized methods in boot.py) ---
+        # ACTIVE TABLE REGISTRY
         registry_heading = getattr(env.db, "dbt_registry_name", "Active Table Registry")
         f.write(f"## {registry_heading}\n\n")
         f.write(f"> **Source Database:** `{env.waid_data_dir}`\n\n")
@@ -173,19 +173,10 @@ def generate_structured_markdown(env: WaidBoot, manifest_path: Path, output_file
         
         f.write("\n---\n\n")
 
-        # --- FIXED RAW OPERATIONAL TABLES (Sfrutta parse_raw_tables_specs nativo di boot.db) ---
+        # FIXED RAW OPERATIONAL TABLES
         f.write("## Fixed Raw Operational Tables (SSOT)\n\n")
         f.write("> Dedicated specifications for raw operational tables initialized by waid_init.\n\n")
         
-        raw_specs = env.db.parse_raw_tables_specs()
-        if raw_specs:
-            for tname, create_sql in raw_specs.items():
-                if tname not in dbt_model_names:
-                    # Convert the extracted SQL schema back into a convenient markdown representation if needed,
-                    # or directly print the specifications retrieved via the centralized method in boot.py
-                    pass
-                    
-        # Fallback to direct inspection of the operational database if necessary
         if Path(env.waid_db_file).exists():
             try:
                 conn = sqlite3.connect(str(Path(env.waid_db_file)))
@@ -198,6 +189,8 @@ def generate_structured_markdown(env: WaidBoot, manifest_path: Path, output_file
                 conn.close()
             except Exception as exc:
                 f.write(f"> **Error extracting raw tables:** `{exc}`\n\n")
+        else:
+            f.write("_Operational database file not found._\n\n")
         
         f.write("\n---\n\n")
         
@@ -256,7 +249,6 @@ def main() -> int:
         else:
             docs_dir = Path(env.docs_dir).resolve()
         docs_dir.mkdir(parents=True, exist_ok=True)
-        official_markdown = docs_dir / env.dbt_ssot_file
 
         hash_file = env.waid_data_dir / env.dbt_hash_file
         current_models_hash = calculate_models_hash(dbt_dir)
@@ -281,12 +273,7 @@ def main() -> int:
         generate_structured_markdown(env, manifest_path, operational_markdown, project_root, live_tables)
         hash_file.write_text(current_models_hash)
 
-        if not env.waid_sim_mode:
-            official_markdown.write_text(operational_markdown.read_text(encoding="utf-8"), encoding="utf-8")
-            logger.info(f"Official documentation updated at: {official_markdown} (Simulation Mode: OFF)")
-        else:
-            logger.info(f"Simulation Mode active (waid_sim_mode=True): skipping official docs/ update.")
-
+        logger.warning(f"Skipping official docs/ update.")
         logger.success("Documentation pipeline completed successfully.")
         return WaidExit.SUCCESS
 

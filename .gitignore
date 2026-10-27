@@ -80,6 +80,7 @@ dbt/target/
 dbt/logs/
 dbt/dbt_packages/
 deploy/data/
+deploy/
 
 # Ignores all .env files in config...
 config/*.env

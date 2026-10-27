@@ -54,5 +54,20 @@ export DOCKER_CLIENT_TIMEOUT=7200
 export COMPOSE_HTTP_TIMEOUT=7200
 export BUILDKIT_STEP_TIMEOUT=7200
 
-# Build container leveraging local cache
-docker compose "${COMPOSE_ARGS[@]}" build
+# Match required docker (prod|lab|arm)
+DOCKERFILE_PATH="docker/${ENV}/Dockerfile"
+if [ ! -f "$DOCKERFILE_PATH" ]; then
+    DOCKERFILE_PATH="docker/Dockerfile"
+fi
+
+# Docker build for ARM64 architecture
+if [ "$ENV" = "arm" ]; then
+    DOCKER_BUILDKIT=1 docker build \
+        --platform linux/arm64 \
+        --tag waid_arm:latest \
+        --file "$DOCKERFILE_PATH" \
+        .
+    echo "Build completed successfully"
+fi
+
+echo "No build available for the required architecture ($ENV)"

@@ -11,7 +11,12 @@ services:
     image: waid_arm:latest
     container_name: waid_arm
     user: "${WAID_UID:-1000}:${WAID_GID:-1000}"
-    restart: unless-stopped
+    restart: on-failure:5
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - PYTHONPATH=/app:/app/config:/app/src
       - WAID_SOURCE=/app

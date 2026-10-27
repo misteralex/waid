@@ -203,6 +203,108 @@ def clean_target_range(
     )
 
 
+def check_and_bridge_gap(env: WaidBoot) -> None:
+    """
+    @brief Checks for any missing inference gaps by comparing continuous telemetry
+           with existing forecasts, ensuring already present valid inferences are untouched.
+    @param env WaidBoot configuration instance.
+    @return None
+    """
+    lab_db_path = Path(env.waid_db_file)
+    if not lab_db_path.exists():
+        return
+
+    try:
+        with sqlite3.connect(lab_db_path) as conn:
+            cursor = conn.cursor()
+            
+            # 1. Get all inference timestamps to find continuous blocks
+            cursor.execute(f"SELECT timestamp FROM {env.db.inference_forecast} ORDER BY timestamp ASC")
+            inf_rows = cursor.fetchall()
+            inf_timestamps = {row[0] for row in inf_rows} if inf_rows else set()
+
+            # 2. Get latest telemetry timestamp from stg_ecowitt
+            cursor.execute(f"SELECT MAX(timestamp) FROM {env.db.stg_ecowitt}")
+            row_tel = cursor.fetchone()
+            last_tel_str = row_tel[0] if row_tel and row_tel[0] else None
+
+        if not last_tel_str:
+            return
+
+        local_tz = ZoneInfo(env.tz_timezone)
+        utc_tz = ZoneInfo("UTC")
+        last_tel_dt = datetime.strptime(last_tel_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=utc_tz)
+
+        # Determine the last continuous inference timestamp (ignoring isolated future outliers)
+        sorted_inf = sorted([datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=utc_tz) for ts in inf_timestamps])
+        
+        last_continuous_inf_dt = None
+        if sorted_inf:
+            last_continuous_inf_dt = sorted_inf[0]
+            expected_interval = timedelta(hours=env.scheduled_interval_hours)
+            for i in range(1, len(sorted_inf)):
+                if sorted_inf[i] - sorted_inf[i-1] <= expected_interval + timedelta(minutes=15):
+                    last_continuous_inf_dt = sorted_inf[i]
+                else:
+                    break
+        
+        if not last_continuous_inf_dt:
+            last_continuous_inf_dt = sorted_inf[0] if sorted_inf else None
+
+        if not last_continuous_inf_dt:
+            logger.warning("[AUTO-BRIDGE] No valid inference history found. Skipping gap bridge.")
+            return
+
+        # Check gap between the end of the continuous chain and latest telemetry
+        gap_delta = last_tel_dt - last_continuous_inf_dt
+        threshold_hours = env.scheduled_interval_hours + 1
+
+        if gap_delta > timedelta(hours=threshold_hours):
+            logger.warning(
+                f"[AUTO-BRIDGE] Continuous gap detected! Last continuous inference: {last_continuous_inf_dt} UTC, "
+                f"Latest telemetry: {last_tel_dt} UTC (Delta: {gap_delta}). Bridging missing range..."
+            )
+
+            retro_begin_dt = last_continuous_inf_dt + timedelta(hours=env.scheduled_interval_hours)
+            retro_end_dt = last_tel_dt.replace(minute=0, second=0, microsecond=0)
+
+            if retro_begin_dt <= retro_end_dt:
+                logger.info(f"[AUTO-BRIDGE] Executing catch-up retroactively from {retro_begin_dt} to {retro_end_dt}...")
+                
+                begin_dt_local = retro_begin_dt.astimezone(local_tz)
+                end_dt_local = retro_end_dt.astimezone(local_tz)
+
+                current_dt = begin_dt_local
+                while current_dt <= end_dt_local:
+                    mock_now_str = current_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # Fill only missing hourly slots, leaving existing valid inferences untouched
+                    if mock_now_str not in inf_timestamps:
+                        os.environ["WAID_RETRO_NOW"] = mock_now_str
+                        logger.info(f"=== [AUTO-BRIDGE STEP] Processing missing timestamp: {mock_now_str} ===")
+                        extra_passthrough = [
+                            "--skip-ingestion-ml-deploy",
+                            "--retro-now",
+                            mock_now_str,
+                        ]
+                        code = run_pipeline("incremental", extra_args=extra_passthrough)
+                        if code != 0:
+                            logger.error(f"Pipeline failed at auto-bridge step {mock_now_str} with exit code {code}")
+
+                    current_dt += timedelta(hours=env.mock_interval_hours)
+
+                os.environ.pop("WAID_RETRO_NOW", None)
+                logger.success("[AUTO-BRIDGE] Gap successfully bridged while preserving existing inferences.")
+            else:
+                logger.info("[AUTO-BRIDGE] Calculated bridge interval is empty or invalid. Skipping.")
+        else:
+            logger.info("[AUTO-BRIDGE] No significant continuous gap detected between inferences and telemetry.")
+
+    except Exception as exc:
+        logger.error(f"[AUTO-BRIDGE] Failed to check or bridge gap: {exc}")
+        os.environ.pop("WAID_RETRO_NOW", None)
+        
+        
 def main() -> int:
     """
     @brief Main execution entry point for the continuous operational scheduler or retroactive simulator.
@@ -344,6 +446,9 @@ def main() -> int:
                 "Existing environment detected. Skipping initial backfill."
             )
 
+        # Check and bridge any recent downtime gap before starting the live loop
+        check_and_bridge_gap(env)
+        
         while True:
             ping_streamlit(env, 30)
 
